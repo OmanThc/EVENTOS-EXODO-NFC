@@ -42,8 +42,16 @@ export const Header: React.FC = () => {
         <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-2">
           {/* Brand identity & Company Info */}
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center shadow-inner border border-white/25 text-xl sm:text-2xl shrink-0">
-              {currentCompany?.logoEmoji || '🏢'}
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center shadow-inner border border-white/25 text-xl sm:text-2xl shrink-0 overflow-hidden">
+              {currentCompany?.logoImage || currentCompany?.coverImage ? (
+                <img
+                  src={currentCompany.logoImage || currentCompany.coverImage}
+                  alt={currentCompany.name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                currentCompany?.logoEmoji || '🏢'
+              )}
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">

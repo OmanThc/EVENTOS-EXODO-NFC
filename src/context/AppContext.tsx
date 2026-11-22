@@ -47,6 +47,12 @@ import { INITIAL_COMPANIES } from '../data/initialCompanies';
 import { INITIAL_SETTINGS, INITIAL_MASTER_SETTINGS } from '../data/initialData';
 import { soundSynth } from '../utils/audio';
 import { formatUSD, formatTime } from '../utils/formatters';
+import {
+  sanitizeImageRef,
+  EVENT_COVER_MAX_CHARS,
+  EVENT_LOGO_MAX_CHARS,
+  PRODUCT_IMAGE_MAX_CHARS,
+} from '../utils/imageUtils';
 
 export interface NfcModalConfig {
   mode: 'RECHARGE' | 'CHARGE' | 'QUERY' | 'ASSIGN_QUOTA';
@@ -88,6 +94,7 @@ export interface NewProviderProductDraft {
   price: number;
   emoji: string;
   category?: string;
+  imageUrl?: string;
 }
 
 interface AppContextType {
@@ -130,9 +137,13 @@ interface AppContextType {
     logoEmoji?: string,
     description?: string,
     initialBcvRate?: number,
-    eventMode?: EventMode
+    eventMode?: EventMode,
+    coverImage?: string,
+    logoImage?: string
   ) => Company;
   deleteCompany: (companyId: string) => void;
+  updateCompanyLogoImage: (logoImage: string) => void;
+  updateCompanyCoverImage: (coverImage: string) => void;
   updateCompanyEventMode: (mode: EventMode) => void;
   updateEmployeeAllowances: (rules: EmployeeAllowanceRule[]) => void;
 
@@ -321,6 +332,8 @@ const normalizeCompany = (c: Partial<Company>): Company => {
     slug: c.slug || 'empresa',
     description: c.description || '',
     logoEmoji: c.logoEmoji || '🏢',
+    logoImage: sanitizeImageRef(c.logoImage, EVENT_LOGO_MAX_CHARS),
+    coverImage: sanitizeImageRef(c.coverImage, EVENT_COVER_MAX_CHARS),
     eventMode: c.eventMode === 'CORPORATE' ? 'CORPORATE' : 'CASHLESS',
     employeeAllowances: Array.isArray(c.employeeAllowances) ? c.employeeAllowances : [],
     adminPin: c.adminPin || '1234',
@@ -735,6 +748,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               slug: d.slug,
               description: d.description || '',
               logoEmoji: d.logoEmoji || '🏢',
+              logoImage: sanitizeImageRef(d.logoImage, EVENT_LOGO_MAX_CHARS),
+              coverImage: sanitizeImageRef(d.coverImage, EVENT_COVER_MAX_CHARS),
               eventMode: d.eventMode === 'CORPORATE' ? 'CORPORATE' : 'CASHLESS',
               employeeAllowances: Array.isArray(d.employeeAllowances) ? d.employeeAllowances : [],
               adminPin: d.adminPin || '1234',
@@ -863,6 +878,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                       name: sd.name,
                       price: Number(sd.price) || 0,
                       emoji: sd.emoji || '📦',
+                      imageUrl: sanitizeImageRef(sd.imageUrl, PRODUCT_IMAGE_MAX_CHARS),
                       provider: sd.provider,
                       category: sd.category || 'General',
                       stock: sd.stock,
@@ -1194,7 +1210,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       logoEmoji: string = '🏪',
       description: string = '',
       initialBcvRate: number = 52.4,
-      eventMode: EventMode = 'CASHLESS'
+      eventMode: EventMode = 'CASHLESS',
+      coverImage: string = '',
+      logoImage: string = ''
     ): Company => {
       const id = `comp-${Date.now().toString(36)}`;
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || id;
@@ -1272,6 +1290,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : 'Sistema de gestión de caja, proveedores y control NFC.'
         ),
         logoEmoji: clampStr(logoEmoji, 24, '🏪'),
+        logoImage: sanitizeImageRef(logoImage, EVENT_LOGO_MAX_CHARS),
+        coverImage: sanitizeImageRef(coverImage, EVENT_COVER_MAX_CHARS),
         eventMode,
         employeeAllowances: defaultAllowances,
         adminPin: cleanAdminPin,
@@ -1298,7 +1318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCompanies(prev => [newCompany, ...prev]);
 
       const batch = writeBatch(db);
-      batch.set(doc(db, 'companies', id), {
+      const compPayload: Record<string, unknown> = {
         id,
         ownerUid: actorUid,
         name: newCompany.name,
@@ -1322,7 +1342,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: 'active',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (newCompany.logoImage) {
+        compPayload.logoImage = newCompany.logoImage;
+      }
+      if (newCompany.coverImage) {
+        compPayload.coverImage = newCompany.coverImage;
+      }
+      batch.set(doc(db, 'companies', id), compPayload);
 
       defaultProviders.forEach(prov => {
         batch.set(doc(db, 'companies', id, 'providers', prov.id), {
@@ -1430,6 +1457,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       handleFirestoreError(err, OperationType.WRITE, 'companies/restore-demo');
     }
   }, [firebaseUser, writeInitialCompaniesBatch]);
+
+  const updateCompanyLogoImage = useCallback(
+    (logoImage: string) => {
+      if (!currentCompany) return;
+      const cleanLogo = sanitizeImageRef(logoImage, EVENT_LOGO_MAX_CHARS);
+      updateCurrentCompany(c => ({
+        ...c,
+        logoImage: cleanLogo,
+      }));
+      updateDoc(doc(db, 'companies', currentCompany.id), {
+        logoImage: cleanLogo,
+        updatedAt: serverTimestamp(),
+      }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `companies/${currentCompany.id}`));
+      soundSynth.playSuccess(currentCompany.settings.enableSound);
+    },
+    [currentCompany, updateCurrentCompany]
+  );
+
+  const updateCompanyCoverImage = useCallback(
+    (coverImage: string) => {
+      if (!currentCompany) return;
+      const cleanCover = sanitizeImageRef(coverImage, EVENT_COVER_MAX_CHARS);
+      updateCurrentCompany(c => ({
+        ...c,
+        coverImage: cleanCover,
+      }));
+      updateDoc(doc(db, 'companies', currentCompany.id), {
+        coverImage: cleanCover,
+        updatedAt: serverTimestamp(),
+      }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `companies/${currentCompany.id}`));
+      soundSynth.playSuccess(currentCompany.settings.enableSound);
+    },
+    [currentCompany, updateCurrentCompany]
+  );
 
   const updateCompanyEventMode = useCallback(
     (mode: EventMode) => {
@@ -1660,6 +1721,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           name: clampStr(item.name, 120),
           price: Math.max(0.1, Number(Number(item.price).toFixed(2))),
           emoji: clampStr(item.emoji, 24, '📦'),
+          imageUrl: sanitizeImageRef(item.imageUrl, PRODUCT_IMAGE_MAX_CHARS),
           provider: cleanBrand,
           category: clampStr(item.category, 60, 'General'),
         }));
@@ -1685,7 +1747,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       newProducts.forEach(pr => {
         const pId = String(pr.id);
-        batch.set(doc(db, 'companies', currentCompany.id, 'products', pId), {
+        const prPayload: Record<string, unknown> = {
           id: pId,
           companyId: currentCompany.id,
           ownerUid,
@@ -1696,7 +1758,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           category: pr.category || 'General',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (pr.imageUrl) prPayload.imageUrl = pr.imageUrl;
+        batch.set(doc(db, 'companies', currentCompany.id, 'products', pId), prPayload);
       });
 
       batch.commit().catch(err =>
@@ -1958,12 +2022,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addProduct = useCallback(
     (prodData: Omit<Product, 'id'>): Product => {
+      const cleanImg = sanitizeImageRef(prodData.imageUrl, PRODUCT_IMAGE_MAX_CHARS);
       const newProd: Product = {
         ...prodData,
         id: Date.now(),
         name: clampStr(prodData.name, 120, 'Producto'),
         price: Math.max(0.1, Number(prodData.price.toFixed(2))),
         emoji: clampStr(prodData.emoji, 24, '📦'),
+        imageUrl: cleanImg,
         provider: clampStr(prodData.provider, 100, 'General'),
         category: clampStr(prodData.category, 60, 'General'),
       };
@@ -1991,7 +2057,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (currentCompany) {
         const ownerUid = getCompanyOwnerUid(currentCompany);
         const prodId = String(newProd.id);
-        setDoc(doc(db, 'companies', currentCompany.id, 'products', prodId), {
+        const prodPayload: Record<string, unknown> = {
           id: prodId,
           companyId: currentCompany.id,
           ownerUid,
@@ -2002,7 +2068,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           category: newProd.category || 'General',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        }).catch(err =>
+        };
+        if (cleanImg) prodPayload.imageUrl = cleanImg;
+
+        setDoc(doc(db, 'companies', currentCompany.id, 'products', prodId), prodPayload).catch(err =>
           handleFirestoreError(err, OperationType.CREATE, `companies/${currentCompany.id}/products/${prodId}`)
         );
       }
@@ -2016,14 +2085,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateProduct = useCallback(
     (id: number, fields: Partial<Product>) => {
       if (!currentCompany) return;
+      const cleanImg =
+        fields.imageUrl !== undefined
+          ? sanitizeImageRef(fields.imageUrl, PRODUCT_IMAGE_MAX_CHARS)
+          : undefined;
+      const sanitizedFields: Partial<Product> =
+        cleanImg !== undefined ? { ...fields, imageUrl: cleanImg } : fields;
+
       updateCurrentCompany(c => ({
         ...c,
-        products: c.products.map(p => (p.id === id ? { ...p, ...fields } : p)),
+        products: c.products.map(p => (p.id === id ? { ...p, ...sanitizedFields } : p)),
       }));
       const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
       if (fields.name !== undefined && fields.name.trim()) payload.name = clampStr(fields.name, 120);
       if (fields.price !== undefined && fields.price > 0) payload.price = Math.max(0.1, Number(fields.price));
       if (fields.emoji !== undefined) payload.emoji = clampStr(fields.emoji, 24, '📦');
+      if (cleanImg !== undefined) payload.imageUrl = cleanImg;
       if (fields.provider !== undefined && fields.provider.trim()) payload.provider = clampStr(fields.provider, 100);
       if (fields.category !== undefined) payload.category = clampStr(fields.category, 60, 'General');
 
@@ -3162,6 +3239,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logoutCompany,
     registerCompany,
     deleteCompany,
+    updateCompanyLogoImage,
+    updateCompanyCoverImage,
     updateCompanyEventMode,
     updateEmployeeAllowances,
 

@@ -51,6 +51,19 @@ service cloud.firestore {
       return color is string && color.size() >= 4 && color.size() <= 20 && color.matches('^#[0-9a-fA-F]{3,8}$');
     }
 
+    function isValidOptionalImageRef(val, maxLen) {
+      return val is string && (
+        val.size() == 0 ||
+        (
+          val.size() <= maxLen &&
+          (
+            val.matches('^https://[^\\s<>"]+$') ||
+            val.matches('^data:image/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$')
+          )
+        )
+      );
+    }
+
     function companyExists(companyId) {
       return exists(/databases/$(database)/documents/companies/$(companyId));
     }
@@ -158,6 +171,8 @@ service cloud.firestore {
           'slug',
           'description',
           'logoEmoji',
+          'logoImage',
+          'coverImage',
           'eventMode',
           'employeeAllowances',
           'adminPin',
@@ -182,6 +197,8 @@ service cloud.firestore {
         data.slug is string && data.slug.size() >= 1 && data.slug.size() <= 120 &&
         (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
         data.logoEmoji is string && data.logoEmoji.size() >= 1 && data.logoEmoji.size() <= 24 &&
+        (!('logoImage' in data) || isValidOptionalImageRef(data.logoImage, 70000)) &&
+        (!('coverImage' in data) || isValidOptionalImageRef(data.coverImage, 100000)) &&
         (!('eventMode' in data) || (data.eventMode is string && data.eventMode in ['CASHLESS', 'CORPORATE'])) &&
         (!('employeeAllowances' in data) || (
           data.employeeAllowances is list &&
@@ -302,6 +319,7 @@ service cloud.firestore {
           'name',
           'price',
           'emoji',
+          'imageUrl',
           'provider',
           'category',
           'stock',
@@ -314,6 +332,7 @@ service cloud.firestore {
         data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
         (data.price is int || data.price is float) && data.price >= 0.01 && data.price <= 100000 &&
         data.emoji is string && data.emoji.size() >= 1 && data.emoji.size() <= 24 &&
+        (!('imageUrl' in data) || isValidOptionalImageRef(data.imageUrl, 80000)) &&
         data.provider is string && data.provider.size() >= 1 && data.provider.size() <= 100 &&
         (!('category' in data) || (data.category is string && data.category.size() >= 1 && data.category.size() <= 60)) &&
         (!('stock' in data) || (data.stock is int && data.stock >= 0 && data.stock <= 1000000)) &&
@@ -466,6 +485,8 @@ service cloud.firestore {
           'slug',
           'description',
           'logoEmoji',
+          'logoImage',
+          'coverImage',
           'eventMode',
           'employeeAllowances',
           'adminPin',
@@ -576,7 +597,7 @@ service cloud.firestore {
           incoming().ownerUid == existing().ownerUid &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'price', 'emoji', 'provider', 'category', 'stock', 'updatedAt']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'price', 'emoji', 'imageUrl', 'provider', 'category', 'stock', 'updatedAt']);
 
         allow delete: if isValidId(companyId) && isValidId(productId);
       }

@@ -668,6 +668,16 @@ export const SuperAdminDashboard: React.FC = () => {
                     }`}
                   >
                     <div>
+                      {comp.coverImage && (
+                        <div className="h-24 w-full rounded-2xl overflow-hidden border border-slate-800 mb-3 bg-slate-950">
+                          <img
+                            src={comp.coverImage}
+                            alt={comp.name}
+                            loading="lazy"
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      )}
                       <div className="flex items-start justify-between gap-2 mb-3">
                         <div className="flex items-start gap-2.5 min-w-0">
                           <button
@@ -689,8 +699,17 @@ export const SuperAdminDashboard: React.FC = () => {
                               <Square className="w-4 h-4" />
                             )}
                           </button>
-                          <span className="text-3xl p-2 rounded-2xl bg-slate-800 border border-slate-700 shrink-0">
-                            {comp.logoEmoji}
+                          <span className="w-12 h-12 rounded-2xl bg-slate-800 border border-slate-700 shrink-0 flex items-center justify-center text-3xl overflow-hidden">
+                            {comp.logoImage ? (
+                              <img
+                                src={comp.logoImage}
+                                alt={`Logo ${comp.name}`}
+                                loading="lazy"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              comp.logoEmoji
+                            )}
                           </span>
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-1.5">

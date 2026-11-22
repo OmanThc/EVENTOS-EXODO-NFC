@@ -14,10 +14,12 @@ import {
   KeyRound,
   Briefcase,
   CheckCircle2,
+  Camera,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { formatUSD, formatBs } from '../utils/formatters';
 import { Product } from '../types';
+import { compressImageFileToDataUrl, PRODUCT_IMAGE_MAX_CHARS } from '../utils/imageUtils';
 
 export const ProveedoresModule: React.FC = () => {
   const {
@@ -28,6 +30,7 @@ export const ProveedoresModule: React.FC = () => {
     lockProvider,
     setIsNewProviderModalOpen,
     products,
+    updateProduct,
     cart,
     addToCart,
     updateCartQty,
@@ -41,9 +44,35 @@ export const ProveedoresModule: React.FC = () => {
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isEditingPhotos, setIsEditingPhotos] = useState<boolean>(false);
+  const [uploadingProductId, setUploadingProductId] = useState<number | null>(null);
+  const [photoError, setPhotoError] = useState<string>('');
   const cartSectionRef = useRef<HTMLDivElement>(null);
 
   const isCorp = currentCompany?.eventMode === 'CORPORATE';
+
+  const handleProductPhotoUpload = async (
+    productId: number,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoError('');
+    setUploadingProductId(productId);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 400,
+        maxHeight: 400,
+        maxChars: PRODUCT_IMAGE_MAX_CHARS,
+      });
+      updateProduct(productId, { imageUrl: dataUrl });
+    } catch (err) {
+      setPhotoError(err instanceof Error ? err.message : 'No se pudo procesar la foto.');
+    } finally {
+      setUploadingProductId(null);
+    }
+  };
 
   // Filter products strictly to the unlocked provider brand
   const filteredProducts = useMemo(() => {
@@ -197,13 +226,30 @@ export const ProveedoresModule: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 sm:flex items-center gap-1.5 sm:gap-2">
+        <div className="grid grid-cols-2 sm:flex items-center gap-1.5 sm:gap-2">
           <button
             onClick={() => setIsProductModalOpen(true)}
             className="px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] sm:text-sm flex items-center justify-center gap-1.5 shadow-md transition active:scale-95 cursor-pointer"
           >
             <Plus className="w-4 h-4 text-emerald-400 shrink-0" />
             <span className="truncate">Producto</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsEditingPhotos(prev => !prev);
+              setPhotoError('');
+            }}
+            className={`px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl font-bold text-[11px] sm:text-sm flex items-center justify-center gap-1.5 border transition active:scale-95 cursor-pointer ${
+              isEditingPhotos
+                ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+            }`}
+            title="Subir o cambiar fotos PNG/JPG de tus productos"
+          >
+            <Camera className="w-4 h-4 shrink-0" />
+            <span className="truncate">{isEditingPhotos ? 'Listo' : 'Fotos'}</span>
           </button>
 
           <button
@@ -215,7 +261,10 @@ export const ProveedoresModule: React.FC = () => {
           </button>
 
           <button
-            onClick={lockProvider}
+            onClick={() => {
+              setIsEditingPhotos(false);
+              lockProvider();
+            }}
             className="px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-bold text-[11px] sm:text-sm flex items-center justify-center gap-1.5 transition active:scale-95 cursor-pointer"
             title="Bloquear este stand y cambiar de proveedor"
           >
@@ -252,6 +301,27 @@ export const ProveedoresModule: React.FC = () => {
             </span>
           </div>
 
+          {isEditingPhotos && (
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-blue-900">
+              <span>
+                <strong>Modo edición de fotos:</strong> Toca cualquier producto para subir o cambiar su imagen PNG/JPG.
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsEditingPhotos(false)}
+                className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-black text-[11px] cursor-pointer"
+              >
+                Terminar
+              </button>
+            </div>
+          )}
+
+          {photoError && (
+            <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">
+              {photoError}
+            </p>
+          )}
+
           {filteredProducts.length === 0 ? (
             <div className="bg-white rounded-3xl p-10 text-center border border-slate-200 text-slate-400">
               <ShoppingBag className="w-12 h-12 mx-auto text-slate-300 mb-3" />
@@ -264,6 +334,7 @@ export const ProveedoresModule: React.FC = () => {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-3.5">
               {filteredProducts.map((prod: Product) => {
                 const inCart = cart.find(i => i.product.id === prod.id);
+                const isUploading = uploadingProductId === prod.id;
                 const matchedRule = isCorp
                   ? currentCompany?.employeeAllowances.find(
                       r =>
@@ -273,22 +344,32 @@ export const ProveedoresModule: React.FC = () => {
                     )
                   : null;
 
-                return (
-                  <button
-                    key={prod.id}
-                    onClick={() => addToCart(prod)}
-                    className="bg-white hover:border-blue-500 border border-slate-200/90 rounded-2xl p-3.5 sm:p-4 text-left shadow-xs hover:shadow-md transition-all duration-150 flex flex-col justify-between group active:scale-95 cursor-pointer relative overflow-hidden"
-                  >
-                    {inCart && (
-                      <span className="absolute top-2 right-2 px-2 py-0.5 rounded-full bg-blue-600 text-white font-black text-[11px] shadow">
+                const cardVisual = (
+                  <>
+                    {!isEditingPhotos && inCart && (
+                      <span className="absolute top-2 right-2 z-10 px-2 py-0.5 rounded-full bg-blue-600 text-white font-black text-[11px] shadow-md">
                         {inCart.qty}
                       </span>
                     )}
 
                     <div>
-                      <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-100 group-hover:bg-blue-50 flex items-center justify-center text-2xl mb-2.5 transition shadow-inner">
-                        {prod.emoji || '📦'}
-                      </div>
+                      {prod.imageUrl ? (
+                        <div className="relative w-full aspect-[16/10] rounded-xl overflow-hidden bg-slate-100 mb-2.5 border border-slate-200/70">
+                          <img
+                            src={prod.imageUrl}
+                            alt={prod.name}
+                            loading="lazy"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                          <span className="absolute bottom-1.5 left-1.5 w-6 h-6 rounded-lg bg-white/90 backdrop-blur-xs flex items-center justify-center text-sm shadow-xs">
+                            {prod.emoji || '📦'}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-2xl bg-slate-100 group-hover:bg-blue-50 flex items-center justify-center text-2xl mb-2.5 transition shadow-inner">
+                          {prod.emoji || '📦'}
+                        </div>
+                      )}
                       <h4 className="font-extrabold text-slate-800 text-xs sm:text-sm leading-snug line-clamp-2">
                         {prod.name}
                       </h4>
@@ -297,35 +378,82 @@ export const ProveedoresModule: React.FC = () => {
                       </span>
                     </div>
 
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-end justify-between">
-                      {isCorp ? (
-                        <div>
-                          {matchedRule ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-black text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
-                              <CheckCircle2 className="w-2.5 h-2.5" />
-                              <span>1 {matchedRule.label}</span>
+                    {isEditingPhotos ? (
+                      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-1.5">
+                        <label className="flex-1 py-1.5 px-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px] flex items-center justify-center gap-1 cursor-pointer transition">
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>{isUploading ? 'Subiendo...' : prod.imageUrl ? 'Cambiar' : 'Subir Foto'}</span>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            onChange={e => void handleProductPhotoUpload(prod.id, e)}
+                            disabled={isUploading}
+                            className="hidden"
+                          />
+                        </label>
+                        {prod.imageUrl && (
+                          <button
+                            type="button"
+                            onClick={() => updateProduct(prod.id, { imageUrl: '' })}
+                            className="p-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 cursor-pointer"
+                            title="Quitar foto"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-end justify-between">
+                        {isCorp ? (
+                          <div>
+                            {matchedRule ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-black text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">
+                                <CheckCircle2 className="w-2.5 h-2.5" />
+                                <span>1 {matchedRule.label}</span>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-bold text-slate-400">Sin cupo</span>
+                            )}
+                            <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
+                              Ref. {formatUSD(prod.price)}
                             </span>
-                          ) : (
-                            <span className="text-[10px] font-bold text-slate-400">Sin cupo</span>
-                          )}
-                          <span className="text-[10px] text-slate-400 font-mono block mt-0.5">
-                            Ref. {formatUSD(prod.price)}
-                          </span>
-                        </div>
-                      ) : (
-                        <div>
-                          <span className="font-black text-app-primary text-sm sm:text-base font-mono block">
-                            {formatUSD(prod.price)}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-medium">
-                            ≈ {formatBs(prod.price * settings.bcvRate)}
-                          </span>
-                        </div>
-                      )}
-                      <span className="w-7 h-7 rounded-xl bg-slate-100 group-hover:bg-app-primary group-hover:text-white text-slate-700 flex items-center justify-center font-black text-base transition shadow-xs shrink-0">
-                        +
-                      </span>
+                          </div>
+                        ) : (
+                          <div>
+                            <span className="font-black text-app-primary text-sm sm:text-base font-mono block">
+                              {formatUSD(prod.price)}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">
+                              ≈ {formatBs(prod.price * settings.bcvRate)}
+                            </span>
+                          </div>
+                        )}
+                        <span className="w-7 h-7 rounded-xl bg-slate-100 group-hover:bg-app-primary group-hover:text-white text-slate-700 flex items-center justify-center font-black text-base transition shadow-xs shrink-0">
+                          +
+                        </span>
+                      </div>
+                    )}
+                  </>
+                );
+
+                if (isEditingPhotos) {
+                  return (
+                    <div
+                      key={prod.id}
+                      className="bg-white border-2 border-blue-200 rounded-2xl p-3 sm:p-3.5 text-left shadow-xs flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      {cardVisual}
                     </div>
+                  );
+                }
+
+                return (
+                  <button
+                    key={prod.id}
+                    onClick={() => addToCart(prod)}
+                    className="bg-white hover:border-blue-500 border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 text-left shadow-xs hover:shadow-md transition-all duration-150 flex flex-col justify-between group active:scale-95 cursor-pointer relative overflow-hidden"
+                  >
+                    {cardVisual}
                   </button>
                 );
               })}
@@ -375,7 +503,17 @@ export const ProveedoresModule: React.FC = () => {
                   className="flex items-center justify-between gap-2.5 bg-slate-50 hover:bg-slate-100/70 p-3 rounded-2xl border border-slate-200/80 transition"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <span className="text-2xl shrink-0">{item.product.emoji || '🍽️'}</span>
+                    <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-2xl shrink-0 overflow-hidden">
+                      {item.product.imageUrl ? (
+                        <img
+                          src={item.product.imageUrl}
+                          alt={item.product.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        item.product.emoji || '🍽️'
+                      )}
+                    </div>
                     <div className="truncate">
                       <p className="font-black text-slate-800 text-xs sm:text-sm truncate">
                         {item.product.name}

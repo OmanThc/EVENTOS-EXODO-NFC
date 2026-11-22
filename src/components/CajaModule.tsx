@@ -479,8 +479,17 @@ export const CajaModule: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-xl shrink-0 shadow-xs">
-                    {prod.emoji || '📦'}
+                  <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-xl shrink-0 shadow-xs overflow-hidden">
+                    {prod.imageUrl ? (
+                      <img
+                        src={prod.imageUrl}
+                        alt={prod.name}
+                        loading="lazy"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      prod.emoji || '📦'
+                    )}
                   </div>
                   <div className="min-w-0">
                     <p className="font-black text-slate-800 text-xs sm:text-sm truncate">

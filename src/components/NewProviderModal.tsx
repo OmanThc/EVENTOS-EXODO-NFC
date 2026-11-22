@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Plus, Trash2, Store, Lock, Eye, EyeOff, Package } from 'lucide-react';
+import { X, Plus, Trash2, Store, Lock, Eye, EyeOff, Package, Camera } from 'lucide-react';
 import { useApp, NewProviderProductDraft } from '../context/AppContext';
 import { formatBs } from '../utils/formatters';
+import { compressImageFileToDataUrl, PRODUCT_IMAGE_MAX_CHARS } from '../utils/imageUtils';
 
 const BRAND_EMOJIS = ['🍔', '🍕', '🌭', '🌮', '🍣', '🥩', '🥤', '🍺', '🍹', '☕', '🍩', '🍦', '🧁', '🍿', '🏪'];
 const PRODUCT_EMOJIS = ['🍔', '🍟', '🌭', '🍕', '🌮', '🥩', '🥤', '🍺', '🍹', '☕', '🍩', '🍦', '💧', '🍿', '📦'];
@@ -19,6 +20,7 @@ export const NewProviderModal: React.FC = () => {
   const [pin, setPin] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
   const [draftProducts, setDraftProducts] = useState<NewProviderProductDraft[]>([
     { name: '', price: 5.0, emoji: '🍔', category: 'Comida' },
   ]);
@@ -45,6 +47,26 @@ export const NewProviderModal: React.FC = () => {
     setDraftProducts(prev =>
       prev.map((row, idx) => (idx === index ? { ...row, [field]: value } : row))
     );
+  };
+
+  const handleRowImageUpload = async (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setErrorMsg('');
+    setUploadingIdx(index);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 400,
+        maxHeight: 400,
+        maxChars: PRODUCT_IMAGE_MAX_CHARS,
+      });
+      handleRowChange(index, 'imageUrl', dataUrl);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'No se pudo procesar la foto del producto.');
+    } finally {
+      setUploadingIdx(null);
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -82,8 +104,8 @@ export const NewProviderModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150 overflow-y-auto">
-      <div className="bg-white rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl border border-slate-200 my-auto max-h-[92vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150 overflow-y-auto">
+      <div className="bg-white rounded-t-3xl sm:rounded-3xl max-w-2xl w-full p-5 sm:p-7 shadow-2xl border border-slate-200 my-auto max-h-[92vh] overflow-y-auto pb-safe">
         {/* Header */}
         <div className="flex items-center justify-between pb-3.5 border-b border-slate-100 mb-5">
           <div className="flex items-center gap-2.5">
@@ -95,7 +117,7 @@ export const NewProviderModal: React.FC = () => {
                 Registrar Nuevo Proveedor
               </h3>
               <p className="text-xs text-slate-500">
-                Define la marca, su PIN numérico secreto y los productos que venderá en su stand.
+                Define la marca, su PIN numérico secreto y los productos (con foto opcional) de su stand.
               </p>
             </div>
           </div>
@@ -205,11 +227,46 @@ export const NewProviderModal: React.FC = () => {
                   key={idx}
                   className="grid grid-cols-12 gap-2 items-center bg-slate-50 p-2.5 rounded-2xl border border-slate-200/80"
                 >
-                  <div className="col-span-2 sm:col-span-2">
+                  {/* Photo upload thumbnail OR Emoji */}
+                  <div className="col-span-3 sm:col-span-3 flex items-center gap-1.5">
+                    <div className="relative shrink-0">
+                      <label
+                        title="Subir foto PNG o JPG"
+                        className="w-10 h-10 rounded-xl border border-slate-300 bg-white flex items-center justify-center overflow-hidden cursor-pointer hover:border-blue-500 transition shadow-2xs"
+                      >
+                        {item.imageUrl ? (
+                          <img
+                            src={item.imageUrl}
+                            alt={item.name || 'Producto'}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <Camera className={`w-4 h-4 ${uploadingIdx === idx ? 'animate-pulse text-blue-500' : 'text-slate-400'}`} />
+                        )}
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp"
+                          onChange={e => void handleRowImageUpload(idx, e)}
+                          disabled={uploadingIdx === idx}
+                          className="hidden"
+                        />
+                      </label>
+                      {item.imageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => handleRowChange(idx, 'imageUrl', '')}
+                          className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center shadow cursor-pointer"
+                          title="Quitar foto"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      )}
+                    </div>
+
                     <select
                       value={item.emoji}
                       onChange={e => handleRowChange(idx, 'emoji', e.target.value)}
-                      className="w-full px-2 py-2 rounded-xl border border-slate-300 bg-white text-base text-center font-bold"
+                      className="w-full px-1 py-2 rounded-xl border border-slate-300 bg-white text-sm text-center font-bold"
                     >
                       {PRODUCT_EMOJIS.map(em => (
                         <option key={em} value={em}>
@@ -231,9 +288,9 @@ export const NewProviderModal: React.FC = () => {
                     />
                   </div>
 
-                  <div className="col-span-4 sm:col-span-4">
+                  <div className="col-span-3 sm:col-span-3">
                     <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
                         $
                       </span>
                       <input
@@ -243,11 +300,11 @@ export const NewProviderModal: React.FC = () => {
                         required
                         value={item.price}
                         onChange={e => handleRowChange(idx, 'price', parseFloat(e.target.value) || 0)}
-                        className="w-full pl-6 pr-2 py-2 rounded-xl border border-slate-300 bg-white text-xs sm:text-sm font-black font-mono text-slate-900 focus:outline-none focus:ring-2 ring-app-primary"
+                        className="w-full pl-5 pr-1.5 py-2 rounded-xl border border-slate-300 bg-white text-xs sm:text-sm font-black font-mono text-slate-900 focus:outline-none focus:ring-2 ring-app-primary"
                       />
                     </div>
-                    <span className="text-[10px] text-slate-400 font-mono block pl-1">
-                      ≈ {formatBs((Number(item.price) || 0) * settings.bcvRate)}
+                    <span className="text-[10px] text-slate-400 font-mono block pl-1 truncate">
+                      {formatBs((Number(item.price) || 0) * settings.bcvRate)}
                     </span>
                   </div>
 

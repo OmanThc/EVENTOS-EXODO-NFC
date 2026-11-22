@@ -22,6 +22,10 @@ import {
   Users,
   CheckCircle2,
   Eraser,
+  Image as ImageIcon,
+  Upload,
+  Camera,
+  X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { formatUSD, formatBs, formatDateTime } from '../utils/formatters';
@@ -29,12 +33,21 @@ import { soundSynth } from '../utils/audio';
 import { calculateCompanyProviderStats, exportProvidersCSV } from '../utils/providerStats';
 import { EmployeeAllowanceRule } from '../types';
 import { TestDataCleanupModal } from './TestDataCleanupModal';
+import {
+  compressImageFileToDataUrl,
+  EVENT_COVER_MAX_CHARS,
+  EVENT_LOGO_MAX_CHARS,
+  PRODUCT_IMAGE_MAX_CHARS,
+  sanitizeImageRef,
+} from '../utils/imageUtils';
 
 const RULE_EMOJIS = ['🍽️', '🍦', '🥤', '🍔', '☕', '🍿', '🎁', '🎟️', '🍕', '🍺'];
 
 export const AdminModule: React.FC = () => {
   const {
     currentCompany,
+    updateCompanyLogoImage,
+    updateCompanyCoverImage,
     updateCompanyEventMode,
     updateEmployeeAllowances,
     updateAdminPin,
@@ -76,6 +89,18 @@ export const AdminModule: React.FC = () => {
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [isCleanupModalOpen, setIsCleanupModalOpen] = useState<boolean>(false);
   const [confirmQuickWipe, setConfirmQuickWipe] = useState<boolean>(false);
+
+  // Event logo, cover thumbnail & product photo upload states
+  const [logoUrlDraft, setLogoUrlDraft] = useState<string>('');
+  const [showLogoUrlBox, setShowLogoUrlBox] = useState<boolean>(false);
+  const [logoUploadError, setLogoUploadError] = useState<string>('');
+  const [isCompressingLogo, setIsCompressingLogo] = useState<boolean>(false);
+  const [coverUrlDraft, setCoverUrlDraft] = useState<string>('');
+  const [showCoverUrlBox, setShowCoverUrlBox] = useState<boolean>(false);
+  const [coverUploadError, setCoverUploadError] = useState<string>('');
+  const [isCompressingCover, setIsCompressingCover] = useState<boolean>(false);
+  const [uploadingProductId, setUploadingProductId] = useState<number | null>(null);
+  const [productImgError, setProductImgError] = useState<string>('');
 
   // New corporate allowance rule form state
   const [ruleEmoji, setRuleEmoji] = useState<string>('🍽️');
@@ -173,6 +198,97 @@ export const AdminModule: React.FC = () => {
   const handleDeleteRule = (ruleId: string) => {
     if (!currentCompany) return;
     updateEmployeeAllowances(currentCompany.employeeAllowances.filter(r => r.id !== ruleId));
+  };
+
+  const handleLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLogoUploadError('');
+    setIsCompressingLogo(true);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 320,
+        maxHeight: 320,
+        maxChars: EVENT_LOGO_MAX_CHARS,
+      });
+      updateCompanyLogoImage(dataUrl);
+      setLogoUrlDraft('');
+      setShowLogoUrlBox(false);
+    } catch (err) {
+      setLogoUploadError(err instanceof Error ? err.message : 'No se pudo procesar el logo.');
+    } finally {
+      setIsCompressingLogo(false);
+    }
+  };
+
+  const handleApplyLogoUrl = () => {
+    setLogoUploadError('');
+    const clean = sanitizeImageRef(logoUrlDraft, EVENT_LOGO_MAX_CHARS);
+    if (!clean) {
+      setLogoUploadError('Ingresa una URL https:// válida de imagen PNG o JPG.');
+      return;
+    }
+    updateCompanyLogoImage(clean);
+    setLogoUrlDraft('');
+    setShowLogoUrlBox(false);
+  };
+
+  const handleCoverFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setCoverUploadError('');
+    setIsCompressingCover(true);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 720,
+        maxHeight: 405,
+        maxChars: EVENT_COVER_MAX_CHARS,
+      });
+      updateCompanyCoverImage(dataUrl);
+      setCoverUrlDraft('');
+      setShowCoverUrlBox(false);
+    } catch (err) {
+      setCoverUploadError(err instanceof Error ? err.message : 'No se pudo procesar la portada.');
+    } finally {
+      setIsCompressingCover(false);
+    }
+  };
+
+  const handleApplyCoverUrl = () => {
+    setCoverUploadError('');
+    const clean = sanitizeImageRef(coverUrlDraft, EVENT_COVER_MAX_CHARS);
+    if (!clean) {
+      setCoverUploadError('Ingresa una URL https:// válida de imagen PNG o JPG.');
+      return;
+    }
+    updateCompanyCoverImage(clean);
+    setCoverUrlDraft('');
+    setShowCoverUrlBox(false);
+  };
+
+  const handleProductRowPhotoUpload = async (
+    productId: number,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setProductImgError('');
+    setUploadingProductId(productId);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 400,
+        maxHeight: 400,
+        maxChars: PRODUCT_IMAGE_MAX_CHARS,
+      });
+      updateProduct(productId, { imageUrl: dataUrl });
+    } catch (err) {
+      setProductImgError(err instanceof Error ? err.message : 'No se pudo procesar la foto.');
+    } finally {
+      setUploadingProductId(null);
+    }
   };
 
   // Filter transactions
@@ -669,6 +785,213 @@ export const AdminModule: React.FC = () => {
             </div>
 
             <div className="space-y-3 pt-1">
+              {/* Event Icon / Logo Upload (PNG / JPG) */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <ImageIcon className="w-4 h-4 text-emerald-600" />
+                    <span>Logo / Icono del Evento (PNG o JPG)</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowLogoUrlBox(prev => !prev)}
+                    className="text-[11px] font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    {showLogoUrlBox ? 'Ocultar URL' : 'O usar URL https'}
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-3xl overflow-hidden shrink-0 shadow-xs">
+                    {currentCompany?.logoImage ? (
+                      <img
+                        src={currentCompany.logoImage}
+                        alt={`Logo ${currentCompany.name}`}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      currentCompany?.logoEmoji || '🏢'
+                    )}
+                  </div>
+
+                  <div className="flex-1 flex flex-col gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <label className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer transition active:scale-95">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>
+                          {isCompressingLogo
+                            ? 'Optimizando...'
+                            : currentCompany?.logoImage
+                            ? 'Cambiar Logo'
+                            : 'Subir Logo PNG / JPG'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp"
+                          onChange={handleLogoFileUpload}
+                          disabled={isCompressingLogo}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {currentCompany?.logoImage && (
+                        <button
+                          type="button"
+                          onClick={() => updateCompanyLogoImage('')}
+                          className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold text-xs inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Quitar</span>
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      Reemplaza el emoji en tarjetas, barra superior y vista previa del evento.
+                    </p>
+                  </div>
+                </div>
+
+                {showLogoUrlBox && (
+                  <div className="flex gap-1.5">
+                    <input
+                      type="url"
+                      placeholder="https://ejemplo.com/logo.png"
+                      value={logoUrlDraft}
+                      onChange={e => setLogoUrlDraft(e.target.value)}
+                      className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs text-slate-800"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleApplyLogoUrl}
+                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs cursor-pointer"
+                    >
+                      Aplicar
+                    </button>
+                  </div>
+                )}
+
+                {logoUploadError && (
+                  <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-1.5 rounded-xl">
+                    {logoUploadError}
+                  </p>
+                )}
+              </div>
+
+              {/* Event Cover / Social Media Thumbnail */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                    <ImageIcon className="w-4 h-4 text-blue-600" />
+                    <span>Miniatura / Portada del Evento (PNG o JPG)</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowCoverUrlBox(prev => !prev)}
+                    className="text-[11px] font-bold text-blue-600 hover:underline cursor-pointer"
+                  >
+                    {showCoverUrlBox ? 'Ocultar URL' : 'O usar URL https'}
+                  </button>
+                </div>
+
+                {/* Live 16:9 Social Preview */}
+                <div className="relative h-36 w-full rounded-2xl overflow-hidden border border-slate-200 bg-slate-900">
+                  {currentCompany?.coverImage ? (
+                    <img
+                      src={currentCompany.coverImage}
+                      alt={currentCompany.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="w-full h-full flex items-center justify-center"
+                      style={{
+                        background: `linear-gradient(135deg, ${settings.primaryColor}dd 0%, #0f172a 75%, ${settings.secondaryColor}99 100%)`,
+                      }}
+                    >
+                      <span className="text-5xl opacity-30">{currentCompany?.logoEmoji || '🏢'}</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent" />
+                  <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-8 h-8 rounded-xl bg-slate-900/90 border border-white/20 flex items-center justify-center text-lg shrink-0 overflow-hidden">
+                        {currentCompany?.logoImage ? (
+                          <img
+                            src={currentCompany.logoImage}
+                            alt="Logo"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          currentCompany?.logoEmoji || '🏢'
+                        )}
+                      </span>
+                      <span className="font-black text-white text-xs sm:text-sm truncate">
+                        {currentCompany?.name || settings.appName}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-bold text-white/80 bg-black/40 px-2 py-0.5 rounded-full shrink-0">
+                      Vista Previa
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer transition active:scale-95">
+                    <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>
+                      {isCompressingCover
+                        ? 'Optimizando...'
+                        : currentCompany?.coverImage
+                        ? 'Cambiar Portada'
+                        : 'Subir PNG / JPG'}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      onChange={handleCoverFileUpload}
+                      disabled={isCompressingCover}
+                      className="hidden"
+                    />
+                  </label>
+
+                  {currentCompany?.coverImage && (
+                    <button
+                      type="button"
+                      onClick={() => updateCompanyCoverImage('')}
+                      className="px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold text-xs inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Quitar</span>
+                    </button>
+                  )}
+                </div>
+
+                {showCoverUrlBox && (
+                  <div className="flex gap-1.5">
+                    <input
+                      type="url"
+                      placeholder="https://ejemplo.com/portada.jpg"
+                      value={coverUrlDraft}
+                      onChange={e => setCoverUrlDraft(e.target.value)}
+                      className="flex-1 px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-xs text-slate-800"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleApplyCoverUrl}
+                      className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs cursor-pointer"
+                    >
+                      Aplicar
+                    </button>
+                  </div>
+                )}
+
+                {coverUploadError && (
+                  <p className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-200 px-2.5 py-1.5 rounded-xl">
+                    {coverUploadError}
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">
                   Nombre del Evento / Aplicación
@@ -1266,11 +1589,17 @@ export const AdminModule: React.FC = () => {
               />
             </div>
 
+            {productImgError && (
+              <p className="text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 px-3 py-2 rounded-xl">
+                {productImgError}
+              </p>
+            )}
+
             <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
               <table className="w-full text-left border-collapse">
-                <thead className="sticky top-0 bg-white shadow-xs">
+                <thead className="sticky top-0 bg-white shadow-xs z-10">
                   <tr className="border-b border-slate-200 text-[11px] font-black uppercase text-slate-400">
-                    <th className="py-2.5 px-2">Icono</th>
+                    <th className="py-2.5 px-2">Foto / Icono</th>
                     <th className="py-2.5 px-2">Producto</th>
                     <th className="py-2.5 px-2">Categoría</th>
                     <th className="py-2.5 px-2">Precio ($)</th>
@@ -1278,9 +1607,49 @@ export const AdminModule: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredProducts.map(prod => (
+                  {filteredProducts.map(prod => {
+                    const isUploading = uploadingProductId === prod.id;
+                    return (
                     <tr key={prod.id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-2 px-2 text-xl">{prod.emoji}</td>
+                      <td className="py-2 px-2">
+                        <div className="flex items-center gap-1.5">
+                          <div className="relative shrink-0">
+                            <label
+                              title="Subir o cambiar foto PNG/JPG"
+                              className="w-10 h-10 rounded-xl border border-slate-200 bg-slate-50 hover:border-blue-400 flex items-center justify-center overflow-hidden cursor-pointer transition"
+                            >
+                              {isUploading ? (
+                                <Camera className="w-4 h-4 text-blue-500 animate-pulse" />
+                              ) : prod.imageUrl ? (
+                                <img
+                                  src={prod.imageUrl}
+                                  alt={prod.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-xl">{prod.emoji}</span>
+                              )}
+                              <input
+                                type="file"
+                                accept="image/png,image/jpeg,image/jpg,image/webp"
+                                onChange={e => void handleProductRowPhotoUpload(prod.id, e)}
+                                disabled={isUploading}
+                                className="hidden"
+                              />
+                            </label>
+                            {prod.imageUrl && (
+                              <button
+                                type="button"
+                                onClick={() => updateProduct(prod.id, { imageUrl: '' })}
+                                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-500 text-white flex items-center justify-center shadow cursor-pointer"
+                                title="Quitar foto"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </td>
                       <td className="py-2 px-2">
                         <input
                           type="text"
@@ -1321,7 +1690,8 @@ export const AdminModule: React.FC = () => {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

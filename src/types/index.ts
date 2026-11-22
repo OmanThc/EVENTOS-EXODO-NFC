@@ -40,6 +40,7 @@ export interface Product {
   name: string;
   price: number; // in USD (or corporate settlement cost in CORPORATE mode)
   emoji: string;
+  imageUrl?: string;
   provider: string;
   category?: string;
   stock?: number;
@@ -108,6 +109,8 @@ export interface Company {
   slug: string;
   description?: string;
   logoEmoji: string;
+  logoImage?: string;
+  coverImage?: string;
   eventMode: EventMode;
   employeeAllowances: EmployeeAllowanceRule[];
   adminPin: string; // Numeric PIN, strictly secret
