@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   ShieldAlert, 
   ArrowLeft, 
@@ -29,11 +29,20 @@ import {
   Square,
   Eraser,
   AlertTriangle,
-  RotateCcw
+  RotateCcw,
+  Upload,
+  Image as ImageIcon,
+  Radio,
+  X
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { formatUSD, formatBs, formatDateTime } from '../utils/formatters';
 import { calculateGlobalProviderStats, exportProvidersCSV } from '../utils/providerStats';
+import {
+  compressImageFileToDataUrl,
+  APP_LOGO_MAX_CHARS,
+  sanitizeImageRef,
+} from '../utils/imageUtils';
 
 const DEMO_COMPANY_IDS = new Set([
   'comp-gastro-ccs',
@@ -62,13 +71,38 @@ export const SuperAdminDashboard: React.FC = () => {
 
   const [activeSubTab, setActiveSubTab] = useState<'TEXTS' | 'COMPANIES' | 'TRANSACTIONS' | 'PROVIDERS' | 'SECURITY'>('TEXTS');
 
-  // Form state for Home screen texts
+  // Form state for Global Brand & Home screen texts
+  const [appName, setAppName] = useState(masterSettings.appName);
+  const [appLogo, setAppLogo] = useState(masterSettings.appLogo || '');
+  const [appLogoUrlDraft, setAppLogoUrlDraft] = useState('');
+  const [showAppLogoUrlBox, setShowAppLogoUrlBox] = useState(false);
+  const [appLogoError, setAppLogoError] = useState('');
+  const [isCompressingAppLogo, setIsCompressingAppLogo] = useState(false);
+
   const [homeTitle, setHomeTitle] = useState(masterSettings.homeTitle);
   const [homeSubtitle, setHomeSubtitle] = useState(masterSettings.homeSubtitle);
   const [homeDesc, setHomeDesc] = useState(masterSettings.homeHeroDescription);
   const [homeBanner, setHomeBanner] = useState(masterSettings.homeBannerText);
   const [allowPublicReg, setAllowPublicReg] = useState(masterSettings.allowPublicCompanyRegistration);
   const [textsSaved, setTextsSaved] = useState(false);
+
+  useEffect(() => {
+    setAppName(masterSettings.appName);
+    setAppLogo(masterSettings.appLogo || '');
+    setHomeTitle(masterSettings.homeTitle);
+    setHomeSubtitle(masterSettings.homeSubtitle);
+    setHomeDesc(masterSettings.homeHeroDescription);
+    setHomeBanner(masterSettings.homeBannerText);
+    setAllowPublicReg(masterSettings.allowPublicCompanyRegistration);
+  }, [
+    masterSettings.appName,
+    masterSettings.appLogo,
+    masterSettings.homeTitle,
+    masterSettings.homeSubtitle,
+    masterSettings.homeHeroDescription,
+    masterSettings.homeBannerText,
+    masterSettings.allowPublicCompanyRegistration,
+  ]);
 
   // Form state for Master PIN
   const [newMasterPin, setNewMasterPin] = useState('');
@@ -136,9 +170,59 @@ export const SuperAdminDashboard: React.FC = () => {
 
   const globalTotalStickers = companies.reduce((sum, comp) => sum + comp.stickers.length, 0);
 
+  const handleAppLogoFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setAppLogoError('');
+    setIsCompressingAppLogo(true);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file, {
+        maxWidth: 256,
+        maxHeight: 256,
+        maxChars: APP_LOGO_MAX_CHARS,
+      });
+      setAppLogo(dataUrl);
+      setAppLogoUrlDraft('');
+      setShowAppLogoUrlBox(false);
+      updateMasterSettings({ appLogo: dataUrl });
+      setTextsSaved(true);
+      setTimeout(() => setTextsSaved(false), 2500);
+    } catch (err) {
+      setAppLogoError(err instanceof Error ? err.message : 'No se pudo procesar el logo de la app.');
+    } finally {
+      setIsCompressingAppLogo(false);
+    }
+  };
+
+  const handleApplyAppLogoUrl = () => {
+    setAppLogoError('');
+    const clean = sanitizeImageRef(appLogoUrlDraft, APP_LOGO_MAX_CHARS);
+    if (!clean) {
+      setAppLogoError('Ingresa una URL https:// válida de imagen PNG o JPG.');
+      return;
+    }
+    setAppLogo(clean);
+    setAppLogoUrlDraft('');
+    setShowAppLogoUrlBox(false);
+    updateMasterSettings({ appLogo: clean });
+    setTextsSaved(true);
+    setTimeout(() => setTextsSaved(false), 2500);
+  };
+
+  const handleRemoveAppLogo = () => {
+    setAppLogo('');
+    setAppLogoError('');
+    updateMasterSettings({ appLogo: '' });
+    setTextsSaved(true);
+    setTimeout(() => setTextsSaved(false), 2500);
+  };
+
   const handleSaveTexts = (e: React.FormEvent) => {
     e.preventDefault();
     updateMasterSettings({
+      appName: appName.trim() || masterSettings.appName,
+      appLogo,
       homeTitle,
       homeSubtitle,
       homeHeroDescription: homeDesc,
@@ -191,7 +275,7 @@ export const SuperAdminDashboard: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                Auditoría total de la plataforma y modificación de textos de inicio
+                Auditoría total de {masterSettings.appName} y marca global en todos los dispositivos
               </p>
             </div>
           </div>
@@ -283,7 +367,7 @@ export const SuperAdminDashboard: React.FC = () => {
             }`}
           >
             <Edit3 className="w-4 h-4" />
-            <span>1. Modificar Textos de Inicio</span>
+            <span>1. Marca, Logo y Textos</span>
           </button>
 
           <button
@@ -335,20 +419,171 @@ export const SuperAdminDashboard: React.FC = () => {
           </button>
         </div>
 
-        {/* TAB 1: MODIFICAR TEXTOS DE LA PANTALLA DE INICIO */}
+        {/* TAB 1: MARCA, LOGO GLOBAL Y TEXTOS DE INICIO */}
         {activeSubTab === 'TEXTS' && (
-          <div className="bg-slate-900/90 rounded-3xl p-6 sm:p-8 border border-slate-800 shadow-xl max-w-3xl space-y-6">
+          <div className="bg-slate-900/90 rounded-3xl p-5 sm:p-8 border border-slate-800 shadow-xl max-w-3xl space-y-6">
             <div>
               <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
                 <Edit3 className="w-5 h-5 text-amber-400" />
-                <span>Editor de Textos & Marca de la Pantalla de Inicio</span>
+                <span>Nombre, Logo y Textos Globales de la App</span>
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Como Administrador Supremo, puedes cambiar en vivo los titulares, eslogan y mensajes que ven todos los visitantes al abrir la web app.
+                Como Administrador Supremo, personaliza el nombre oficial, el logo PNG y los textos de inicio visibles en tiempo real en todos los teléfonos y PCs.
               </p>
             </div>
 
-            <form onSubmit={handleSaveTexts} className="space-y-4">
+            <form onSubmit={handleSaveTexts} className="space-y-5">
+              {/* Live Brand Identity Preview & Editor */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-amber-400">
+                    Vista Previa en Barra Superior (Todos los dispositivos)
+                  </span>
+                </div>
+
+                {/* Live Navbar Preview */}
+                <div className="p-3 rounded-2xl bg-slate-900 border border-slate-700/80 flex items-center gap-3">
+                  {appLogo ? (
+                    <div className="w-11 h-11 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center shrink-0 overflow-hidden p-1">
+                      <img
+                        src={appLogo}
+                        alt={appName || 'Logo App'}
+                        className="w-full h-full object-contain"
+                      />
+                    </div>
+                  ) : (
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center border border-white/20 shrink-0">
+                      <Radio className="w-5 h-5 text-white animate-pulse" />
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-base text-white truncate">
+                        {appName.trim() || masterSettings.appName}
+                      </span>
+                      <span className="text-[10px] font-black uppercase tracking-wider bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full shrink-0">
+                        Multi-Empresa
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      {homeBanner || masterSettings.homeBannerText}
+                    </p>
+                  </div>
+                </div>
+
+                {/* App Name Input */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                    Nombre Oficial de la App (reemplaza &quot;PaySticker NFC&quot;)
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={120}
+                    value={appName}
+                    onChange={e => setAppName(e.target.value)}
+                    placeholder="Ej: Mi Marca Cashless NFC"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm font-black text-white focus:outline-none focus:ring-2 ring-amber-500"
+                  />
+                </div>
+
+                {/* App Logo PNG / JPG Uploader */}
+                <div className="space-y-2.5">
+                  <label className="block text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Logo de la App (PNG con fondo transparente o JPG)</span>
+                  </label>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-700 flex items-center justify-center overflow-hidden p-1.5 shrink-0">
+                      {appLogo ? (
+                        <img
+                          src={appLogo}
+                          alt="Logo actual"
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <Radio className="w-6 h-6 text-slate-500" />
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-[200px] space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs cursor-pointer transition active:scale-95">
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>
+                            {isCompressingAppLogo
+                              ? 'Procesando PNG...'
+                              : appLogo
+                              ? 'Cambiar Logo PNG / JPG'
+                              : 'Subir Logo PNG / JPG'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/jpg,image/webp"
+                            onChange={handleAppLogoFileUpload}
+                            disabled={isCompressingAppLogo}
+                            className="hidden"
+                          />
+                        </label>
+
+                        {appLogo && (
+                          <button
+                            type="button"
+                            onClick={handleRemoveAppLogo}
+                            className="px-3 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 font-bold text-xs flex items-center gap-1 cursor-pointer transition"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Quitar Logo</span>
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3 text-[11px]">
+                        <button
+                          type="button"
+                          onClick={() => setShowAppLogoUrlBox(prev => !prev)}
+                          className="text-amber-400 hover:text-amber-300 font-bold underline cursor-pointer"
+                        >
+                          {showAppLogoUrlBox ? 'Ocultar campo URL' : 'O pegar enlace URL https://'}
+                        </button>
+                        <span className="text-slate-500">
+                          Se sincroniza al instante en PC y teléfonos
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {showAppLogoUrlBox && (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <input
+                        type="url"
+                        value={appLogoUrlDraft}
+                        onChange={e => {
+                          setAppLogoUrlDraft(e.target.value);
+                          setAppLogoError('');
+                        }}
+                        placeholder="https://ejemplo.com/mi-logo.png"
+                        className="flex-1 min-w-[200px] bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 ring-amber-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApplyAppLogoUrl}
+                        className="px-3.5 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs cursor-pointer"
+                      >
+                        Aplicar URL
+                      </button>
+                    </div>
+                  )}
+
+                  {appLogoError && (
+                    <p className="text-xs font-bold text-rose-400 bg-rose-500/10 border border-rose-500/30 px-3 py-2 rounded-xl">
+                      {appLogoError}
+                    </p>
+                  )}
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
                   Título Principal (Hero Heading)
@@ -390,7 +625,7 @@ export const SuperAdminDashboard: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  Texto del Banner Superior (Navbar)
+                  Texto del Banner Superior (Debajo del nombre)
                 </label>
                 <input
                   type="text"
@@ -413,19 +648,19 @@ export const SuperAdminDashboard: React.FC = () => {
                 </label>
               </div>
 
-              <div className="pt-4 flex items-center gap-3">
+              <div className="pt-4 flex flex-wrap items-center gap-3">
                 <button
                   type="submit"
                   className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm flex items-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer"
                 >
                   <Save className="w-4 h-4" />
-                  <span>Guardar Textos de Inicio</span>
+                  <span>Guardar Marca y Textos</span>
                 </button>
 
                 {textsSaved && (
                   <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 animate-in fade-in">
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>¡Textos actualizados en la pantalla de inicio!</span>
+                    <span>¡Nombre, logo y textos actualizados en todos los dispositivos!</span>
                   </span>
                 )}
               </div>

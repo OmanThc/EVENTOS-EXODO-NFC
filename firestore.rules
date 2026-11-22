@@ -91,6 +91,8 @@ service cloud.firestore {
         data.keys().hasOnly([
           'ownerUid',
           'masterPin',
+          'appName',
+          'appLogo',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -101,6 +103,8 @@ service cloud.firestore {
         ]) &&
         data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
         isValidPin(data.masterPin) &&
+        (!('appName' in data) || (data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 120)) &&
+        (!('appLogo' in data) || isValidOptionalImageRef(data.appLogo, 80000)) &&
         data.homeTitle is string && data.homeTitle.size() >= 1 && data.homeTitle.size() <= 200 &&
         data.homeSubtitle is string && data.homeSubtitle.size() >= 1 && data.homeSubtitle.size() <= 200 &&
         data.homeHeroDescription is string && data.homeHeroDescription.size() >= 1 && data.homeHeroDescription.size() <= 600 &&
@@ -123,6 +127,8 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'ownerUid',
+          'appName',
+          'appLogo',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -133,6 +139,8 @@ service cloud.firestore {
           'updatedAt'
         ]) &&
         data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        (!('appName' in data) || (data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 120)) &&
+        (!('appLogo' in data) || isValidOptionalImageRef(data.appLogo, 80000)) &&
         data.homeTitle is string && data.homeTitle.size() >= 1 && data.homeTitle.size() <= 200 &&
         data.homeSubtitle is string && data.homeSubtitle.size() >= 1 && data.homeSubtitle.size() <= 200 &&
         data.homeHeroDescription is string && data.homeHeroDescription.size() >= 1 && data.homeHeroDescription.size() <= 600 &&
@@ -428,6 +436,8 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
           'masterPin',
+          'appName',
+          'appLogo',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -453,6 +463,8 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         incoming().diff(existing()).affectedKeys().hasOnly([
+          'appName',
+          'appLogo',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',

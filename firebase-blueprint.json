@@ -7,6 +7,8 @@
       "properties": {
         "ownerUid": { "type": "string", "maxLength": 128 },
         "masterPin": { "type": "string", "minLength": 4, "maxLength": 8, "pattern": "^[0-9]+$" },
+        "appName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "appLogo": { "type": "string", "maxLength": 80000 },
         "homeTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
         "homeSubtitle": { "type": "string", "minLength": 1, "maxLength": 200 },
         "homeHeroDescription": { "type": "string", "minLength": 1, "maxLength": 600 },
@@ -33,6 +35,8 @@
       "type": "object",
       "properties": {
         "ownerUid": { "type": "string", "maxLength": 128 },
+        "appName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "appLogo": { "type": "string", "maxLength": 80000 },
         "homeTitle": { "type": "string", "minLength": 1, "maxLength": 200 },
         "homeSubtitle": { "type": "string", "minLength": 1, "maxLength": 200 },
         "homeHeroDescription": { "type": "string", "minLength": 1, "maxLength": 600 },

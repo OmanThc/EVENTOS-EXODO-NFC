@@ -51,6 +51,7 @@ import {
   sanitizeImageRef,
   EVENT_COVER_MAX_CHARS,
   EVENT_LOGO_MAX_CHARS,
+  APP_LOGO_MAX_CHARS,
   PRODUCT_IMAGE_MAX_CHARS,
 } from '../utils/imageUtils';
 
@@ -369,6 +370,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return INITIAL_MASTER_SETTINGS;
     }
   });
+  const masterSettingsRef = useRef<MasterSettings>(masterSettings);
+  useEffect(() => {
+    masterSettingsRef.current = masterSettings;
+  }, [masterSettings]);
 
   // 2. Super Admin Access state
   const [isSuperAdminAuthenticated, setIsSuperAdminAuthenticated] = useState<boolean>(false);
@@ -601,6 +606,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!platPubSnap.exists()) {
         await setDoc(platPubRef, {
           ownerUid: actorUid,
+          appName: INITIAL_MASTER_SETTINGS.appName,
+          appLogo: INITIAL_MASTER_SETTINGS.appLogo || '',
           homeTitle: INITIAL_MASTER_SETTINGS.homeTitle,
           homeSubtitle: INITIAL_MASTER_SETTINGS.homeSubtitle,
           homeHeroDescription: INITIAL_MASTER_SETTINGS.homeHeroDescription,
@@ -666,6 +673,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const d = snap.data();
             setMasterSettings(prev => ({
               ...prev,
+              appName: d.appName || prev.appName,
+              appLogo:
+                typeof d.appLogo === 'string'
+                  ? sanitizeImageRef(d.appLogo, APP_LOGO_MAX_CHARS)
+                  : prev.appLogo || '',
               homeTitle: d.homeTitle || prev.homeTitle,
               homeSubtitle: d.homeSubtitle || prev.homeSubtitle,
               homeHeroDescription: d.homeHeroDescription || prev.homeHeroDescription,
@@ -692,6 +704,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             await setDoc(platRef, {
               ownerUid: firebaseUser.uid,
               masterPin: INITIAL_MASTER_SETTINGS.masterPin,
+              appName: INITIAL_MASTER_SETTINGS.appName,
+              appLogo: INITIAL_MASTER_SETTINGS.appLogo || '',
               homeTitle: INITIAL_MASTER_SETTINGS.homeTitle,
               homeSubtitle: INITIAL_MASTER_SETTINGS.homeSubtitle,
               homeHeroDescription: INITIAL_MASTER_SETTINGS.homeHeroDescription,
@@ -988,6 +1002,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentCompany]);
 
+  // Dynamic Browser Title, Meta & App Icon synced with MasterSettings
+  useEffect(() => {
+    const brandName = clampStr(masterSettings.appName, 120, INITIAL_MASTER_SETTINGS.appName);
+    document.title = currentCompany
+      ? `${currentCompany.name} • ${brandName}`
+      : `${brandName} - Cashless & Tasa BCV`;
+
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appleTitle) appleTitle.setAttribute('content', brandName);
+
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) ogTitle.setAttribute('content', `${brandName} - Cashless & Tasa BCV`);
+
+    const logoSrc = sanitizeImageRef(masterSettings.appLogo, APP_LOGO_MAX_CHARS);
+    const faviconEl = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (faviconEl) {
+      faviconEl.href = logoSrc || '/icon.svg';
+      if (logoSrc) faviconEl.removeAttribute('type');
+      else faviconEl.type = 'image/svg+xml';
+    }
+    const appleIconEl = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    if (appleIconEl) {
+      appleIconEl.href = logoSrc || '/apple-touch-icon.png';
+    }
+  }, [masterSettings.appName, masterSettings.appLogo, currentCompany]);
+
   // Helper to update active company locally
   const updateCurrentCompany = useCallback((updater: (comp: Company) => Company) => {
     if (!activeCompanyId) return;
@@ -1005,31 +1045,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Master / Super Admin methods
   const updateMasterSettings = useCallback(
     (partial: Partial<MasterSettings>) => {
-      setMasterSettings(prev => {
-        const next = { ...prev, ...partial };
-        const batch = writeBatch(db);
-        if (isBootstrappedAdminUser && firebaseUser) {
-          batch.update(doc(db, 'platform', 'config'), {
-            masterPin: sanitizePin(next.masterPin, '9999'),
-            homeTitle: clampStr(next.homeTitle, 200, INITIAL_MASTER_SETTINGS.homeTitle),
-            homeSubtitle: clampStr(next.homeSubtitle, 200, INITIAL_MASTER_SETTINGS.homeSubtitle),
-            homeHeroDescription: clampStr(next.homeHeroDescription, 600, INITIAL_MASTER_SETTINGS.homeHeroDescription),
-            homeBannerText: clampStr(next.homeBannerText, 200, INITIAL_MASTER_SETTINGS.homeBannerText),
-            allowPublicCompanyRegistration: Boolean(next.allowPublicCompanyRegistration),
-            updatedAt: serverTimestamp(),
-          });
-        }
-        batch.update(doc(db, 'platform_public', 'config'), {
-          homeTitle: clampStr(next.homeTitle, 200, INITIAL_MASTER_SETTINGS.homeTitle),
-          homeSubtitle: clampStr(next.homeSubtitle, 200, INITIAL_MASTER_SETTINGS.homeSubtitle),
-          homeHeroDescription: clampStr(next.homeHeroDescription, 600, INITIAL_MASTER_SETTINGS.homeHeroDescription),
-          homeBannerText: clampStr(next.homeBannerText, 200, INITIAL_MASTER_SETTINGS.homeBannerText),
-          allowPublicCompanyRegistration: Boolean(next.allowPublicCompanyRegistration),
+      const merged: MasterSettings = { ...masterSettingsRef.current, ...partial };
+      const sanitized: MasterSettings = {
+        ...merged,
+        masterPin: sanitizePin(merged.masterPin, '9999'),
+        appName: clampStr(merged.appName, 120, INITIAL_MASTER_SETTINGS.appName),
+        appLogo: sanitizeImageRef(merged.appLogo, APP_LOGO_MAX_CHARS),
+        homeTitle: clampStr(merged.homeTitle, 200, INITIAL_MASTER_SETTINGS.homeTitle),
+        homeSubtitle: clampStr(merged.homeSubtitle, 200, INITIAL_MASTER_SETTINGS.homeSubtitle),
+        homeHeroDescription: clampStr(merged.homeHeroDescription, 600, INITIAL_MASTER_SETTINGS.homeHeroDescription),
+        homeBannerText: clampStr(merged.homeBannerText, 200, INITIAL_MASTER_SETTINGS.homeBannerText),
+        allowPublicCompanyRegistration: Boolean(merged.allowPublicCompanyRegistration),
+      };
+      masterSettingsRef.current = sanitized;
+      setMasterSettings(sanitized);
+
+      const batch = writeBatch(db);
+      if (isBootstrappedAdminUser && firebaseUser) {
+        batch.update(doc(db, 'platform', 'config'), {
+          masterPin: sanitized.masterPin,
+          appName: sanitized.appName,
+          appLogo: sanitized.appLogo || '',
+          homeTitle: sanitized.homeTitle,
+          homeSubtitle: sanitized.homeSubtitle,
+          homeHeroDescription: sanitized.homeHeroDescription,
+          homeBannerText: sanitized.homeBannerText,
+          allowPublicCompanyRegistration: sanitized.allowPublicCompanyRegistration,
           updatedAt: serverTimestamp(),
         });
-        batch.commit().catch(err => handleFirestoreError(err, OperationType.UPDATE, 'platform_public/config'));
-        return next;
+      }
+      batch.update(doc(db, 'platform_public', 'config'), {
+        appName: sanitized.appName,
+        appLogo: sanitized.appLogo || '',
+        homeTitle: sanitized.homeTitle,
+        homeSubtitle: sanitized.homeSubtitle,
+        homeHeroDescription: sanitized.homeHeroDescription,
+        homeBannerText: sanitized.homeBannerText,
+        allowPublicCompanyRegistration: sanitized.allowPublicCompanyRegistration,
+        updatedAt: serverTimestamp(),
       });
+      batch.commit().catch(err => handleFirestoreError(err, OperationType.UPDATE, 'platform_public/config'));
       soundSynth.playSuccess(true);
     },
     [isBootstrappedAdminUser, firebaseUser]

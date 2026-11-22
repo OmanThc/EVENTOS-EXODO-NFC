@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { Download, Smartphone, X, Share2, MoreVertical } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { useApp } from '../context/AppContext';
 
 interface PWAInstallButtonProps {
   variant?: 'navbar' | 'header' | 'banner';
 }
 
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'navbar' }) => {
+  const { masterSettings } = useApp();
   const { isInstallable, isInstalled, isIOS, isMobileBrowser, install } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
 
@@ -37,12 +39,22 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'n
       {variant === 'banner' ? (
         <div className="mb-6 bg-gradient-to-r from-blue-600/20 via-indigo-600/20 to-emerald-600/20 border border-blue-500/35 rounded-2xl p-3.5 sm:p-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-md">
-              <Smartphone className="w-5 h-5" />
-            </div>
+            {masterSettings.appLogo ? (
+              <div className="w-10 h-10 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center shrink-0 shadow-md overflow-hidden p-1">
+                <img
+                  src={masterSettings.appLogo}
+                  alt={masterSettings.appName}
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                <Smartphone className="w-5 h-5" />
+              </div>
+            )}
             <div className="min-w-0">
               <p className="text-xs sm:text-sm font-black text-white truncate">
-                Instala PaySticker NFC en tu teléfono
+                Instala {masterSettings.appName} en tu teléfono
               </p>
               <p className="text-[11px] text-slate-300 leading-snug">
                 Úsala en pantalla completa, más rápido y sin barra del navegador.
@@ -91,12 +103,22 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'n
               <X className="w-4 h-4" />
             </button>
 
-            <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center mb-3">
-              <Smartphone className="w-6 h-6" />
-            </div>
+            {masterSettings.appLogo ? (
+              <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-200 flex items-center justify-center mb-3 overflow-hidden p-1.5">
+                <img
+                  src={masterSettings.appLogo}
+                  alt={masterSettings.appName}
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            ) : (
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 border border-blue-200 flex items-center justify-center mb-3">
+                <Smartphone className="w-6 h-6" />
+              </div>
+            )}
 
             <h3 className="text-lg font-black text-slate-900 tracking-tight">
-              {isIOS ? 'Instalar en iPhone / iPad' : 'Instalar PaySticker NFC en Android'}
+              {isIOS ? 'Instalar en iPhone / iPad' : `Instalar ${masterSettings.appName} en Android`}
             </h3>
 
             {isIOS ? (

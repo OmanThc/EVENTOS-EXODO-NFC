@@ -1,5 +1,6 @@
 export const EVENT_COVER_MAX_CHARS = 95000;
 export const EVENT_LOGO_MAX_CHARS = 65000;
+export const APP_LOGO_MAX_CHARS = 75000;
 export const PRODUCT_IMAGE_MAX_CHARS = 75000;
 
 const ALLOWED_IMAGE_MIME = new Set([
@@ -69,16 +70,32 @@ export async function compressImageFileToDataUrl(
     throw new Error('El navegador no soporta procesamiento de imágenes.');
   }
 
-  // If PNG is already compact after resizing, try preserving PNG transparency first
+  // If PNG, try preserving PNG transparency across progressive sizes first, then transparent WebP
   const isPng = mime === 'image/png' || ext.endsWith('.png');
   if (isPng) {
+    for (const pngScale of [1, 0.72, 0.52]) {
+      const pw = Math.max(72, Math.round(targetW * pngScale));
+      const ph = Math.max(72, Math.round(targetH * pngScale));
+      canvas.width = pw;
+      canvas.height = ph;
+      ctx.clearRect(0, 0, pw, ph);
+      ctx.drawImage(img, 0, 0, pw, ph);
+      const pngAttempt = canvas.toDataURL('image/png');
+      if (pngAttempt.length <= options.maxChars) {
+        return pngAttempt;
+      }
+    }
+
+    // Try transparent WebP if supported by browser before falling back to opaque JPEG
     canvas.width = targetW;
     canvas.height = targetH;
     ctx.clearRect(0, 0, targetW, targetH);
     ctx.drawImage(img, 0, 0, targetW, targetH);
-    const pngAttempt = canvas.toDataURL('image/png');
-    if (pngAttempt.length <= options.maxChars) {
-      return pngAttempt;
+    for (const quality of [0.85, 0.7, 0.55]) {
+      const webpAttempt = canvas.toDataURL('image/webp', quality);
+      if (webpAttempt.startsWith('data:image/webp;base64,') && webpAttempt.length <= options.maxChars) {
+        return webpAttempt;
+      }
     }
   }
 

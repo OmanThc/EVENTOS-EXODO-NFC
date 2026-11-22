@@ -126,6 +126,8 @@ export interface Company {
 
 export interface MasterSettings {
   masterPin: string; // Master PIN for Admin Supremo (default: "9999")
+  appName: string; // Global platform name displayed in navbar & title
+  appLogo?: string; // Global platform PNG/JPG logo URL or compressed data URI
   homeTitle: string;
   homeSubtitle: string;
   homeHeroDescription: string;

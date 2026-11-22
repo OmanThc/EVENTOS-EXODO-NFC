@@ -152,12 +152,22 @@ export const LoginScreen: React.FC = () => {
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2.5">
           {/* Logo & Banner text */}
           <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 border border-white/20 shrink-0">
-              <Radio className="w-5 h-5 text-white animate-pulse" />
-            </div>
+            {masterSettings.appLogo ? (
+              <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-white/10 backdrop-blur-xs flex items-center justify-center shadow-lg border border-white/20 shrink-0 overflow-hidden p-1">
+                <img
+                  src={masterSettings.appLogo}
+                  alt={masterSettings.appName}
+                  className="w-full h-full object-contain"
+                />
+              </div>
+            ) : (
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 border border-white/20 shrink-0">
+                <Radio className="w-5 h-5 text-white animate-pulse" />
+              </div>
+            )}
             <div className="min-w-0">
               <h1 className="font-black text-base sm:text-lg tracking-tight text-white flex items-center gap-2">
-                <span className="truncate">PaySticker NFC</span>
+                <span className="truncate">{masterSettings.appName}</span>
                 <span className="hidden sm:inline text-[10px] font-black uppercase tracking-wider bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full">
                   Multi-Empresa
                 </span>
@@ -419,7 +429,7 @@ export const LoginScreen: React.FC = () => {
 
       {/* Footer */}
       <footer className="border-t border-slate-900 py-4 px-4 text-center text-xs text-slate-500 pb-safe">
-        PaySticker NFC Multi-Tenant • Cashless &amp; Eventos Corporativos • Tiempo Real.
+        {masterSettings.appName} Multi-Tenant • Cashless &amp; Eventos Corporativos • Tiempo Real.
       </footer>
 
       {/* Modal: Create Company */}

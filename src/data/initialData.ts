@@ -2,6 +2,8 @@ import { Sticker, Product, Transaction, AppThemeSettings, MasterSettings } from 
 
 export const INITIAL_MASTER_SETTINGS: MasterSettings = {
   masterPin: '9999',
+  appName: 'PaySticker NFC',
+  appLogo: '',
   homeTitle: 'Cada empresa con su propia Caja, Proveedores y Admin',
   homeSubtitle: 'Plataforma Cashless con ambientes independientes',
   homeHeroDescription: 'Datos 100% aislados: saldos en stickers NFC, catálogo de productos, métricas en Bolívares y panel de administración protegido con clave numérica secreta.',
