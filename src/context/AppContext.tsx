@@ -49,6 +49,7 @@ import { soundSynth } from '../utils/audio';
 import { formatUSD, formatTime } from '../utils/formatters';
 import {
   sanitizeImageRef,
+  generatePwaAppIcons,
   EVENT_COVER_MAX_CHARS,
   EVENT_LOGO_MAX_CHARS,
   APP_LOGO_MAX_CHARS,
@@ -111,6 +112,8 @@ interface AppContextType {
   // Master / Super Admin
   masterSettings: MasterSettings;
   updateMasterSettings: (partial: Partial<MasterSettings>) => void;
+  updateGlobalCommissionRate: (rate: number) => Promise<void>;
+  convertTrialToPermanent: (companyId: string) => void;
   isSuperAdminAuthenticated: boolean;
   showSuperAdminModal: boolean;
   setShowSuperAdminModal: (show: boolean) => void;
@@ -140,7 +143,12 @@ interface AppContextType {
     initialBcvRate?: number,
     eventMode?: EventMode,
     coverImage?: string,
-    logoImage?: string
+    logoImage?: string,
+    options?: {
+      isTrial24h?: boolean;
+      commissionRate?: number;
+      autoEnter?: boolean;
+    }
   ) => Company;
   deleteCompany: (companyId: string) => void;
   updateCompanyLogoImage: (logoImage: string) => void;
@@ -345,6 +353,8 @@ const normalizeCompany = (c: Partial<Company>): Company => {
     products: prods,
     transactions: Array.isArray(c.transactions) ? c.transactions : [],
     createdAt: c.createdAt || new Date().toISOString().slice(0, 10),
+    isTrial24h: Boolean(c.isTrial24h),
+    expiresAt: typeof c.expiresAt === 'number' ? c.expiresAt : 0,
     status: c.status || 'active',
   };
 };
@@ -395,6 +405,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return INITIAL_COMPANIES.map(normalizeCompany);
     }
   });
+  const companiesRef = useRef<Company[]>(companies);
+  useEffect(() => {
+    companiesRef.current = companies;
+  }, [companies]);
+  const deletingExpiredRef = useRef<Set<string>>(new Set());
+  const manifestBlobUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    return () => {
+      if (manifestBlobUrlRef.current) {
+        URL.revokeObjectURL(manifestBlobUrlRef.current);
+      }
+    };
+  }, []);
 
   // 4. Active Company ID
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(() => {
@@ -485,6 +508,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
+  const purgeExpiredTrialCompanies = useCallback(
+    async (expiredIds: string[]) => {
+      const pendingIds = expiredIds.filter(id => !deletingExpiredRef.current.has(id));
+      if (pendingIds.length === 0) return;
+
+      pendingIds.forEach(id => deletingExpiredRef.current.add(id));
+      const targetSet = new Set(pendingIds);
+
+      setCompanies(prev => prev.filter(c => !targetSet.has(c.id)));
+      setActiveCompanyId(prevId => {
+        if (prevId && targetSet.has(prevId)) {
+          setIsAdminUnlocked(false);
+          setIsCajaUnlocked(false);
+          setUnlockedProviderId(null);
+          setCart([]);
+          return null;
+        }
+        return prevId;
+      });
+
+      try {
+        const refsToDelete: ReturnType<typeof doc>[] = [];
+        for (const cid of pendingIds) {
+          for (const sub of ['transactions', 'stickers', 'products', 'providers']) {
+            const subSnap = await getDocs(collection(db, 'companies', cid, sub));
+            subSnap.docs.forEach(d => refsToDelete.push(d.ref));
+          }
+          refsToDelete.push(doc(db, 'companies', cid));
+        }
+        await commitDeletesInChunks(refsToDelete);
+      } catch (err) {
+        console.error('Error auto-purging expired 24h trial events:', err);
+      } finally {
+        pendingIds.forEach(id => deletingExpiredRef.current.delete(id));
+      }
+    },
+    [commitDeletesInChunks]
+  );
+
   // Write the 4 demo companies into Firestore
   const writeInitialCompaniesBatch = useCallback(async (actorUid: string) => {
     const batch = writeBatch(db);
@@ -513,6 +575,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bgColor: sanitizeHex(rawComp.settings.bgColor, '#f8fafc'),
         enableSound: rawComp.settings.enableSound,
         enableVibration: rawComp.settings.enableVibration,
+        isTrial24h: false,
+        expiresAt: 0,
         status: 'active',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -608,6 +672,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ownerUid: actorUid,
           appName: INITIAL_MASTER_SETTINGS.appName,
           appLogo: INITIAL_MASTER_SETTINGS.appLogo || '',
+          appLogoBgColor: INITIAL_MASTER_SETTINGS.appLogoBgColor || '#ffffff',
+          defaultEventCommissionRate: INITIAL_MASTER_SETTINGS.defaultEventCommissionRate,
           homeTitle: INITIAL_MASTER_SETTINGS.homeTitle,
           homeSubtitle: INITIAL_MASTER_SETTINGS.homeSubtitle,
           homeHeroDescription: INITIAL_MASTER_SETTINGS.homeHeroDescription,
@@ -678,6 +744,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 typeof d.appLogo === 'string'
                   ? sanitizeImageRef(d.appLogo, APP_LOGO_MAX_CHARS)
                   : prev.appLogo || '',
+              appLogoBgColor: sanitizeHex(d.appLogoBgColor, prev.appLogoBgColor || '#ffffff'),
+              defaultEventCommissionRate:
+                typeof d.defaultEventCommissionRate === 'number'
+                  ? Math.min(100, Math.max(0, d.defaultEventCommissionRate))
+                  : prev.defaultEventCommissionRate,
               homeTitle: d.homeTitle || prev.homeTitle,
               homeSubtitle: d.homeSubtitle || prev.homeSubtitle,
               homeHeroDescription: d.homeHeroDescription || prev.homeHeroDescription,
@@ -706,6 +777,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               masterPin: INITIAL_MASTER_SETTINGS.masterPin,
               appName: INITIAL_MASTER_SETTINGS.appName,
               appLogo: INITIAL_MASTER_SETTINGS.appLogo || '',
+              appLogoBgColor: INITIAL_MASTER_SETTINGS.appLogoBgColor || '#ffffff',
+              defaultEventCommissionRate: INITIAL_MASTER_SETTINGS.defaultEventCommissionRate,
               homeTitle: INITIAL_MASTER_SETTINGS.homeTitle,
               homeSubtitle: INITIAL_MASTER_SETTINGS.homeSubtitle,
               homeHeroDescription: INITIAL_MASTER_SETTINGS.homeHeroDescription,
@@ -749,10 +822,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         snapshot => {
           const docsMap = new Map<string, Company>();
           const activeIds = new Set<string>();
+          const expiredTrialIds: string[] = [];
+          const nowMs = Date.now();
 
           snapshot.docs.forEach(docSnap => {
             const d = docSnap.data();
             const cid = docSnap.id;
+            const isTrial24h = Boolean(d.isTrial24h);
+            const expiresAt = typeof d.expiresAt === 'number' ? d.expiresAt : 0;
+
+            if (isTrial24h && expiresAt > 0 && nowMs >= expiresAt) {
+              expiredTrialIds.push(cid);
+              return;
+            }
+
             activeIds.add(cid);
 
             docsMap.set(cid, {
@@ -788,9 +871,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 d.createdAt && typeof d.createdAt.toDate === 'function'
                   ? d.createdAt.toDate().toISOString().slice(0, 10)
                   : new Date().toISOString().slice(0, 10),
+              isTrial24h,
+              expiresAt,
               status: d.status || 'active',
             });
           });
+
+          if (expiredTrialIds.length > 0) {
+            void purgeExpiredTrialCompanies(expiredTrialIds);
+          }
 
           setCompanies(prev => {
             const prevById = new Map(prev.map(c => [c.id, c]));
@@ -1002,31 +1091,154 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [currentCompany]);
 
-  // Dynamic Browser Title, Meta & App Icon synced with MasterSettings
+  // Dynamic Browser Title, Meta, App Logo Background CSS Var, Favicons & Dynamic PWA Manifest
   useEffect(() => {
+    let cancelled = false;
     const brandName = clampStr(masterSettings.appName, 120, INITIAL_MASTER_SETTINGS.appName);
+    const logoBg = sanitizeHex(masterSettings.appLogoBgColor, '#ffffff');
+    const logoSrc = sanitizeImageRef(masterSettings.appLogo, APP_LOGO_MAX_CHARS) || '/app-logo.png';
+
+    document.documentElement.style.setProperty('--app-logo-bg', logoBg);
+
     document.title = currentCompany
       ? `${currentCompany.name} • ${brandName}`
       : `${brandName} - Cashless & Tasa BCV`;
 
+    const shortWords = brandName.split(/\s+/).filter(Boolean);
+    const shortName =
+      brandName.length <= 12
+        ? brandName
+        : shortWords[0] && shortWords[0].length <= 12
+        ? shortWords[0]
+        : brandName.slice(0, 12).trim();
+
     const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
-    if (appleTitle) appleTitle.setAttribute('content', brandName);
+    if (appleTitle) appleTitle.setAttribute('content', shortName);
 
     const ogTitle = document.querySelector('meta[property="og:title"]');
     if (ogTitle) ogTitle.setAttribute('content', `${brandName} - Cashless & Tasa BCV`);
 
-    const logoSrc = sanitizeImageRef(masterSettings.appLogo, APP_LOGO_MAX_CHARS);
-    const faviconEl = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (faviconEl) {
-      faviconEl.href = logoSrc || '/icon.svg';
-      if (logoSrc) faviconEl.removeAttribute('type');
-      else faviconEl.type = 'image/svg+xml';
-    }
-    const appleIconEl = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
-    if (appleIconEl) {
-      appleIconEl.href = logoSrc || '/apple-touch-icon.png';
-    }
-  }, [masterSettings.appName, masterSettings.appLogo, currentCompany]);
+    const applyManifestAndIcons = async () => {
+      const origin = window.location.origin;
+      const generatedIcons = logoSrc ? await generatePwaAppIcons(logoSrc, logoBg) : null;
+      if (cancelled) return;
+
+      const faviconEl = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (faviconEl) {
+        faviconEl.href = generatedIcons?.icon192 || logoSrc || '/icon.svg';
+        if (generatedIcons?.icon192) faviconEl.type = 'image/png';
+        else if (logoSrc) faviconEl.removeAttribute('type');
+        else faviconEl.type = 'image/svg+xml';
+      }
+
+      const appleIconEl = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+      if (appleIconEl) {
+        appleIconEl.href = generatedIcons?.appleTouchIcon || logoSrc || '/apple-touch-icon.png';
+      }
+
+      const manifestData = {
+        id: `${origin}/`,
+        name: brandName,
+        short_name: shortName,
+        description:
+          masterSettings.homeSubtitle ||
+          'Plataforma POS Cashless NFC y Eventos Corporativos con tasa BCV.',
+        theme_color: '#0f172a',
+        background_color: logoBg,
+        display: 'standalone',
+        orientation: 'portrait',
+        start_url: `${origin}/`,
+        scope: `${origin}/`,
+        icons: generatedIcons
+          ? [
+              {
+                src: generatedIcons.icon192,
+                sizes: '192x192',
+                type: 'image/png',
+                purpose: 'any',
+              },
+              {
+                src: generatedIcons.icon512,
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'any',
+              },
+              {
+                src: generatedIcons.icon512Maskable,
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'maskable',
+              },
+            ]
+          : [
+              {
+                src: `${origin}/pwa-192x192.png`,
+                sizes: '192x192',
+                type: 'image/png',
+                purpose: 'any',
+              },
+              {
+                src: `${origin}/pwa-512x512.png`,
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'any',
+              },
+              {
+                src: `${origin}/pwa-maskable-512x512.png`,
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'maskable',
+              },
+            ],
+      };
+
+      const blob = new Blob([JSON.stringify(manifestData)], {
+        type: 'application/manifest+json',
+      });
+      const nextBlobUrl = URL.createObjectURL(blob);
+      const prevBlobUrl = manifestBlobUrlRef.current;
+      manifestBlobUrlRef.current = nextBlobUrl;
+
+      let manifestLink = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+      if (!manifestLink) {
+        manifestLink = document.createElement('link');
+        manifestLink.rel = 'manifest';
+        document.head.appendChild(manifestLink);
+      }
+      manifestLink.href = nextBlobUrl;
+
+      if (prevBlobUrl) {
+        URL.revokeObjectURL(prevBlobUrl);
+      }
+    };
+
+    void applyManifestAndIcons();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    masterSettings.appName,
+    masterSettings.appLogo,
+    masterSettings.appLogoBgColor,
+    masterSettings.homeSubtitle,
+    currentCompany,
+  ]);
+
+  // Periodic 60s check to expire and purge any 24h trial events in real time
+  useEffect(() => {
+    const checkExpired = () => {
+      const now = Date.now();
+      const expired = companiesRef.current
+        .filter(c => c.isTrial24h && c.expiresAt && c.expiresAt > 0 && now >= c.expiresAt)
+        .map(c => c.id);
+      if (expired.length > 0) {
+        void purgeExpiredTrialCompanies(expired);
+      }
+    };
+    const timer = window.setInterval(checkExpired, 60_000);
+    return () => window.clearInterval(timer);
+  }, [purgeExpiredTrialCompanies]);
 
   // Helper to update active company locally
   const updateCurrentCompany = useCallback((updater: (comp: Company) => Company) => {
@@ -1046,11 +1258,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateMasterSettings = useCallback(
     (partial: Partial<MasterSettings>) => {
       const merged: MasterSettings = { ...masterSettingsRef.current, ...partial };
+      const cleanRate = Number.isFinite(Number(merged.defaultEventCommissionRate))
+        ? Math.round(Math.min(100, Math.max(0, Number(merged.defaultEventCommissionRate))) * 100) / 100
+        : INITIAL_MASTER_SETTINGS.defaultEventCommissionRate;
+
       const sanitized: MasterSettings = {
         ...merged,
         masterPin: sanitizePin(merged.masterPin, '9999'),
         appName: clampStr(merged.appName, 120, INITIAL_MASTER_SETTINGS.appName),
         appLogo: sanitizeImageRef(merged.appLogo, APP_LOGO_MAX_CHARS),
+        appLogoBgColor: sanitizeHex(merged.appLogoBgColor, '#ffffff'),
+        defaultEventCommissionRate: cleanRate,
         homeTitle: clampStr(merged.homeTitle, 200, INITIAL_MASTER_SETTINGS.homeTitle),
         homeSubtitle: clampStr(merged.homeSubtitle, 200, INITIAL_MASTER_SETTINGS.homeSubtitle),
         homeHeroDescription: clampStr(merged.homeHeroDescription, 600, INITIAL_MASTER_SETTINGS.homeHeroDescription),
@@ -1066,6 +1284,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           masterPin: sanitized.masterPin,
           appName: sanitized.appName,
           appLogo: sanitized.appLogo || '',
+          appLogoBgColor: sanitized.appLogoBgColor || '#ffffff',
+          defaultEventCommissionRate: sanitized.defaultEventCommissionRate,
           homeTitle: sanitized.homeTitle,
           homeSubtitle: sanitized.homeSubtitle,
           homeHeroDescription: sanitized.homeHeroDescription,
@@ -1077,6 +1297,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       batch.update(doc(db, 'platform_public', 'config'), {
         appName: sanitized.appName,
         appLogo: sanitized.appLogo || '',
+        appLogoBgColor: sanitized.appLogoBgColor || '#ffffff',
+        defaultEventCommissionRate: sanitized.defaultEventCommissionRate,
         homeTitle: sanitized.homeTitle,
         homeSubtitle: sanitized.homeSubtitle,
         homeHeroDescription: sanitized.homeHeroDescription,
@@ -1089,6 +1311,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     },
     [isBootstrappedAdminUser, firebaseUser]
   );
+
+  const updateGlobalCommissionRate = useCallback(
+    async (rate: number) => {
+      const cleanRate = Math.round(Math.min(100, Math.max(0, Number(rate) || 0)) * 100) / 100;
+      updateMasterSettings({ defaultEventCommissionRate: cleanRate });
+
+      setCompanies(prev =>
+        prev.map(c => ({
+          ...c,
+          settings: {
+            ...c.settings,
+            eventCommissionRate: cleanRate,
+          },
+        }))
+      );
+
+      try {
+        const list = companiesRef.current;
+        const CHUNK_SIZE = 400;
+        for (let i = 0; i < list.length; i += CHUNK_SIZE) {
+          const batch = writeBatch(db);
+          list.slice(i, i + CHUNK_SIZE).forEach(comp => {
+            batch.update(doc(db, 'companies', comp.id), {
+              eventCommissionRate: cleanRate,
+              updatedAt: serverTimestamp(),
+            });
+          });
+          await batch.commit();
+        }
+        soundSynth.playSuccess(true);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, 'companies/commission-rate');
+      }
+    },
+    [updateMasterSettings]
+  );
+
+  const convertTrialToPermanent = useCallback((companyId: string) => {
+    setCompanies(prev =>
+      prev.map(c =>
+        c.id === companyId ? { ...c, isTrial24h: false, expiresAt: 0 } : c
+      )
+    );
+    updateDoc(doc(db, 'companies', companyId), {
+      isTrial24h: false,
+      expiresAt: 0,
+      updatedAt: serverTimestamp(),
+    }).catch(err => handleFirestoreError(err, OperationType.UPDATE, `companies/${companyId}`));
+    soundSynth.playSuccess(true);
+  }, []);
 
   const loginSuperAdmin = useCallback((pin: string): boolean => {
     const isCorrect = pin.trim() === masterSettings.masterPin.trim();
@@ -1267,7 +1539,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       initialBcvRate: number = 52.4,
       eventMode: EventMode = 'CASHLESS',
       coverImage: string = '',
-      logoImage: string = ''
+      logoImage: string = '',
+      options?: {
+        isTrial24h?: boolean;
+        commissionRate?: number;
+        autoEnter?: boolean;
+      }
     ): Company => {
       const id = `comp-${Date.now().toString(36)}`;
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || id;
@@ -1277,6 +1554,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const today = new Date().toISOString().slice(0, 10);
       const actorUid = getCompanyOwnerUid(null);
       const isCorp = eventMode === 'CORPORATE';
+      const isTrial24h = Boolean(options?.isTrial24h);
+      const expiresAt = isTrial24h ? Date.now() + 24 * 60 * 60 * 1000 : 0;
+      const commissionRate =
+        options?.commissionRate !== undefined
+          ? Math.min(100, Math.max(0, Number(options.commissionRate) || 0))
+          : masterSettingsRef.current.defaultEventCommissionRate ?? 8;
 
       const defaultAllowances: EmployeeAllowanceRule[] = isCorp ? DEFAULT_CORPORATE_RULES : [];
 
@@ -1353,13 +1636,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cajaPin: cleanCajaPin,
         providers: defaultProviders,
         createdAt: today,
+        isTrial24h,
+        expiresAt,
         status: 'active',
         settings: {
           ...INITIAL_SETTINGS,
           appName: clampStr(name, 120, 'Nueva Empresa'),
           subtitle: isCorp ? 'Evento Corporativo • Control de Beneficios NFC' : 'Cashless Oficial & Tasa BCV',
           bcvRate: cleanBcv,
-          eventCommissionRate: isCorp ? 0 : 8,
+          eventCommissionRate: commissionRate,
           primaryColor: '#2563eb',
           primaryHoverColor: '#1d4ed8',
           secondaryColor: '#10b981',
@@ -1394,6 +1679,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         bgColor: newCompany.settings.bgColor,
         enableSound: newCompany.settings.enableSound,
         enableVibration: newCompany.settings.enableVibration,
+        isTrial24h,
+        expiresAt,
         status: 'active',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -1457,12 +1744,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       batch.commit().catch(err => handleFirestoreError(err, OperationType.CREATE, `companies/${id}`));
 
-      setActiveCompanyId(newCompany.id);
-      setIsAdminUnlocked(false);
-      setIsCajaUnlocked(false);
-      setUnlockedProviderId(null);
-      setActiveTab('caja');
-      setCart([]);
+      if (options?.autoEnter !== false) {
+        setActiveCompanyId(newCompany.id);
+        setIsAdminUnlocked(false);
+        setIsCajaUnlocked(false);
+        setUnlockedProviderId(null);
+        setActiveTab('caja');
+        setCart([]);
+      }
       soundSynth.playSuccess(true);
       return newCompany;
     },
@@ -3273,6 +3562,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     masterSettings,
     updateMasterSettings,
+    updateGlobalCommissionRate,
+    convertTrialToPermanent,
     isSuperAdminAuthenticated,
     showSuperAdminModal,
     setShowSuperAdminModal,

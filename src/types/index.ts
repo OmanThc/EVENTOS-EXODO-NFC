@@ -121,6 +121,8 @@ export interface Company {
   products: Product[];
   transactions: Transaction[];
   createdAt: string;
+  isTrial24h?: boolean;
+  expiresAt?: number; // Epoch ms when a 24h trial event expires automatically
   status?: 'active' | 'suspended';
 }
 
@@ -128,6 +130,8 @@ export interface MasterSettings {
   masterPin: string; // Master PIN for Admin Supremo (default: "9999")
   appName: string; // Global platform name displayed in navbar & title
   appLogo?: string; // Global platform PNG/JPG logo URL or compressed data URI
+  appLogoBgColor?: string; // Background color behind transparent PNG app logo & PWA icons
+  defaultEventCommissionRate: number; // Global App Commission % applied across events
   homeTitle: string;
   homeSubtitle: string;
   homeHeroDescription: string;

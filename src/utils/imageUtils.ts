@@ -122,3 +122,64 @@ export async function compressImageFileToDataUrl(
 
   throw new Error('La imagen es demasiado pesada. Intenta con una foto más liviana.');
 }
+
+export interface GeneratedPwaIcons {
+  icon192: string;
+  icon512: string;
+  icon512Maskable: string;
+  appleTouchIcon: string;
+}
+
+export async function generatePwaAppIcons(
+  appLogoSrc: string,
+  bgColor: string = '#ffffff'
+): Promise<GeneratedPwaIcons | null> {
+  if (!appLogoSrc) return null;
+  const safeBg = /^#[0-9a-fA-F]{3,8}$/.test(bgColor.trim()) ? bgColor.trim() : '#ffffff';
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      if (!appLogoSrc.startsWith('data:')) {
+        el.crossOrigin = 'anonymous';
+      }
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Failed to load logo image for PWA icon'));
+      el.src = appLogoSrc;
+    });
+
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (iw <= 0 || ih <= 0) return null;
+
+    const renderIcon = (size: number, paddingRatio: number): string => {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+
+      ctx.fillStyle = safeBg;
+      ctx.fillRect(0, 0, size, size);
+
+      const maxBox = size * (1 - paddingRatio * 2);
+      const scale = Math.min(maxBox / iw, maxBox / ih);
+      const drawW = iw * scale;
+      const drawH = ih * scale;
+      const dx = (size - drawW) / 2;
+      const dy = (size - drawH) / 2;
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+
+      return canvas.toDataURL('image/png');
+    };
+
+    return {
+      icon192: renderIcon(192, 0.1),
+      icon512: renderIcon(512, 0.1),
+      icon512Maskable: renderIcon(512, 0.16),
+      appleTouchIcon: renderIcon(180, 0.12),
+    };
+  } catch {
+    return null;
+  }
+}

@@ -14,6 +14,7 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: [
           'icon.svg',
+          'app-logo.png',
           'apple-touch-icon.png',
           'pwa-192x192.png',
           'pwa-512x512.png',
@@ -26,7 +27,7 @@ export default defineConfig(() => {
           description:
             'Plataforma POS Cashless NFC y Eventos Corporativos con tasa BCV y sincronización multi-dispositivo.',
           theme_color: '#0f172a',
-          background_color: '#0f172a',
+          background_color: '#ffffff',
           display: 'standalone',
           orientation: 'portrait',
           start_url: '/',

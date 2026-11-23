@@ -4,11 +4,13 @@ export const INITIAL_MASTER_SETTINGS: MasterSettings = {
   masterPin: '9999',
   appName: 'PaySticker NFC',
   appLogo: '',
+  appLogoBgColor: '#ffffff',
+  defaultEventCommissionRate: 8,
   homeTitle: 'Cada empresa con su propia Caja, Proveedores y Admin',
   homeSubtitle: 'Plataforma Cashless con ambientes independientes',
   homeHeroDescription: 'Datos 100% aislados: saldos en stickers NFC, catálogo de productos, métricas en Bolívares y panel de administración protegido con clave numérica secreta.',
   homeBannerText: 'Multi-Empresa Cloud • Plataforma Cashless con ambientes independientes',
-  allowPublicCompanyRegistration: true,
+  allowPublicCompanyRegistration: false,
 };
 
 export const INITIAL_SETTINGS: AppThemeSettings = {

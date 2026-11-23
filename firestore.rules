@@ -93,6 +93,8 @@ service cloud.firestore {
           'masterPin',
           'appName',
           'appLogo',
+          'appLogoBgColor',
+          'defaultEventCommissionRate',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -105,6 +107,8 @@ service cloud.firestore {
         isValidPin(data.masterPin) &&
         (!('appName' in data) || (data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 120)) &&
         (!('appLogo' in data) || isValidOptionalImageRef(data.appLogo, 80000)) &&
+        (!('appLogoBgColor' in data) || isValidHexColor(data.appLogoBgColor)) &&
+        (!('defaultEventCommissionRate' in data) || ((data.defaultEventCommissionRate is int || data.defaultEventCommissionRate is float) && data.defaultEventCommissionRate >= 0 && data.defaultEventCommissionRate <= 100)) &&
         data.homeTitle is string && data.homeTitle.size() >= 1 && data.homeTitle.size() <= 200 &&
         data.homeSubtitle is string && data.homeSubtitle.size() >= 1 && data.homeSubtitle.size() <= 200 &&
         data.homeHeroDescription is string && data.homeHeroDescription.size() >= 1 && data.homeHeroDescription.size() <= 600 &&
@@ -129,6 +133,8 @@ service cloud.firestore {
           'ownerUid',
           'appName',
           'appLogo',
+          'appLogoBgColor',
+          'defaultEventCommissionRate',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -141,6 +147,8 @@ service cloud.firestore {
         data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
         (!('appName' in data) || (data.appName is string && data.appName.size() >= 1 && data.appName.size() <= 120)) &&
         (!('appLogo' in data) || isValidOptionalImageRef(data.appLogo, 80000)) &&
+        (!('appLogoBgColor' in data) || isValidHexColor(data.appLogoBgColor)) &&
+        (!('defaultEventCommissionRate' in data) || ((data.defaultEventCommissionRate is int || data.defaultEventCommissionRate is float) && data.defaultEventCommissionRate >= 0 && data.defaultEventCommissionRate <= 100)) &&
         data.homeTitle is string && data.homeTitle.size() >= 1 && data.homeTitle.size() <= 200 &&
         data.homeSubtitle is string && data.homeSubtitle.size() >= 1 && data.homeSubtitle.size() <= 200 &&
         data.homeHeroDescription is string && data.homeHeroDescription.size() >= 1 && data.homeHeroDescription.size() <= 600 &&
@@ -195,6 +203,8 @@ service cloud.firestore {
           'bgColor',
           'enableSound',
           'enableVibration',
+          'isTrial24h',
+          'expiresAt',
           'status',
           'createdAt',
           'updatedAt'
@@ -225,6 +235,8 @@ service cloud.firestore {
         isValidHexColor(data.bgColor) &&
         data.enableSound is bool &&
         data.enableVibration is bool &&
+        (!('isTrial24h' in data) || data.isTrial24h is bool) &&
+        (!('expiresAt' in data) || ((data.expiresAt is int || data.expiresAt is float) && data.expiresAt >= 0 && data.expiresAt <= 9999999999999)) &&
         (!('status' in data) || (data.status is string && data.status in ['active', 'suspended'])) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -438,6 +450,8 @@ service cloud.firestore {
           'masterPin',
           'appName',
           'appLogo',
+          'appLogoBgColor',
+          'defaultEventCommissionRate',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -465,6 +479,8 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly([
           'appName',
           'appLogo',
+          'appLogoBgColor',
+          'defaultEventCommissionRate',
           'homeTitle',
           'homeSubtitle',
           'homeHeroDescription',
@@ -513,6 +529,8 @@ service cloud.firestore {
           'bgColor',
           'enableSound',
           'enableVibration',
+          'isTrial24h',
+          'expiresAt',
           'status',
           'updatedAt'
         ]);
