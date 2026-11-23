@@ -32,6 +32,34 @@ export const AdminPinModal: React.FC = () => {
     }
   }, [showPinModal]);
 
+  const targetLength = currentCompany?.adminPin?.length || 4;
+
+  const handleDigitPress = (digit: string) => {
+    soundSynth.playClick(settings.enableSound);
+    setEnteredPin(prev => {
+      if (prev.length >= targetLength) return prev;
+      const nextPin = prev + digit;
+      setErrorMessage('');
+
+      if (nextPin.length === targetLength) {
+        setTimeout(() => {
+          const success = unlockAdminWithPin(nextPin);
+          if (!success) {
+            setErrorMessage('Clave numérica incorrecta. Inténtalo de nuevo.');
+            setEnteredPin('');
+          }
+        }, 100);
+      }
+      return nextPin;
+    });
+  };
+
+  const handleBackspace = () => {
+    soundSynth.playClick(settings.enableSound);
+    setEnteredPin(prev => prev.slice(0, -1));
+    setErrorMessage('');
+  };
+
   // Support physical keyboard
   useEffect(() => {
     if (!showPinModal) return;
@@ -51,35 +79,9 @@ export const AdminPinModal: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showPinModal, enteredPin]);
+  }, [showPinModal, targetLength, settings.enableSound]);
 
   if (!showPinModal || !currentCompany) return null;
-
-  const handleDigitPress = (digit: string) => {
-    soundSynth.playClick(settings.enableSound);
-    if (enteredPin.length >= 6) return;
-    const nextPin = enteredPin + digit;
-    setEnteredPin(nextPin);
-    setErrorMessage('');
-
-    // If matches target length (e.g. company's pin length, usually 4), auto-verify
-    const targetLength = currentCompany.adminPin.length || 4;
-    if (nextPin.length === targetLength) {
-      setTimeout(() => {
-        const success = unlockAdminWithPin(nextPin);
-        if (!success) {
-          setErrorMessage('Clave numérica incorrecta. Inténtalo de nuevo.');
-          setEnteredPin('');
-        }
-      }, 100);
-    }
-  };
-
-  const handleBackspace = () => {
-    soundSynth.playClick(settings.enableSound);
-    setEnteredPin(prev => prev.slice(0, -1));
-    setErrorMessage('');
-  };
 
   const handleManualSubmit = () => {
     if (!enteredPin) return;
@@ -89,8 +91,6 @@ export const AdminPinModal: React.FC = () => {
       setEnteredPin('');
     }
   };
-
-  const targetLength = currentCompany.adminPin.length || 4;
 
   return (
     <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">

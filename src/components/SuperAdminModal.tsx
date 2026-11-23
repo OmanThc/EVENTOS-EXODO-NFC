@@ -29,6 +29,33 @@ export const SuperAdminModal: React.FC = () => {
     }
   }, [showSuperAdminModal]);
 
+  const handleDigitPress = (digit: string) => {
+    soundSynth.playClick(true);
+    setEnteredPin(prev => {
+      if (prev.length >= 4) return prev;
+      const nextPin = prev + digit;
+      setErrorMessage('');
+
+      // When 4 digits are entered, test PIN
+      if (nextPin.length === 4) {
+        setTimeout(() => {
+          const success = loginSuperAdmin(nextPin);
+          if (!success) {
+            setErrorMessage('Clave maestra incorrecta. Acceso restringido.');
+            setEnteredPin('');
+          }
+        }, 100);
+      }
+      return nextPin;
+    });
+  };
+
+  const handleBackspace = () => {
+    soundSynth.playClick(true);
+    setEnteredPin(prev => prev.slice(0, -1));
+    setErrorMessage('');
+  };
+
   // Support physical keyboard
   useEffect(() => {
     if (!showSuperAdminModal) return;
@@ -48,34 +75,9 @@ export const SuperAdminModal: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showSuperAdminModal, enteredPin]);
+  }, [showSuperAdminModal]);
 
   if (!showSuperAdminModal) return null;
-
-  const handleDigitPress = (digit: string) => {
-    soundSynth.playClick(true);
-    if (enteredPin.length >= 6) return;
-    const nextPin = enteredPin + digit;
-    setEnteredPin(nextPin);
-    setErrorMessage('');
-
-    // When 4 digits are entered, test PIN
-    if (nextPin.length === 4) {
-      setTimeout(() => {
-        const success = loginSuperAdmin(nextPin);
-        if (!success) {
-          setErrorMessage('Clave maestra incorrecta. Acceso restringido.');
-          setEnteredPin('');
-        }
-      }, 100);
-    }
-  };
-
-  const handleBackspace = () => {
-    soundSynth.playClick(true);
-    setEnteredPin(prev => prev.slice(0, -1));
-    setErrorMessage('');
-  };
 
   const handleManualSubmit = () => {
     if (!enteredPin) return;

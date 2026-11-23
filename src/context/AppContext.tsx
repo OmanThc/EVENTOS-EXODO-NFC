@@ -1306,7 +1306,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         allowPublicCompanyRegistration: sanitized.allowPublicCompanyRegistration,
         updatedAt: serverTimestamp(),
       });
-      batch.commit().catch(err => handleFirestoreError(err, OperationType.UPDATE, 'platform_public/config'));
+      batch.commit().catch(err => {
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, 'platform_public/config');
+        } catch (e) {
+          console.error('Firestore sync error in updateMasterSettings:', e);
+        }
+      });
       soundSynth.playSuccess(true);
     },
     [isBootstrappedAdminUser, firebaseUser]
@@ -1742,7 +1748,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       });
 
-      batch.commit().catch(err => handleFirestoreError(err, OperationType.CREATE, `companies/${id}`));
+      batch.commit().catch(err => {
+        try {
+          handleFirestoreError(err, OperationType.CREATE, `companies/${id}`);
+        } catch (e) {
+          console.error('Firestore sync error in registerCompany:', e);
+        }
+      });
 
       if (options?.autoEnter !== false) {
         setActiveCompanyId(newCompany.id);
@@ -2107,9 +2119,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         batch.set(doc(db, 'companies', currentCompany.id, 'products', pId), prPayload);
       });
 
-      batch.commit().catch(err =>
-        handleFirestoreError(err, OperationType.CREATE, `companies/${currentCompany.id}/providers/${provId}`)
-      );
+      batch.commit().catch(err => {
+        try {
+          handleFirestoreError(err, OperationType.CREATE, `companies/${currentCompany.id}/providers/${provId}`);
+        } catch (e) {
+          console.error('Firestore sync error in addProviderWithProducts:', e);
+        }
+      });
 
       soundSynth.playSuccess(currentCompany.settings.enableSound);
       return newProvider;
@@ -2137,7 +2153,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
 
   const deleteProviderBrand = useCallback(
-    (providerId: string) => {
+    async (providerId: string) => {
       if (!currentCompany) return;
       const target = currentCompany.providers.find(p => p.id === providerId);
       if (!target) return;
@@ -2159,9 +2175,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       productsToRemove.forEach(pr => {
         batch.delete(doc(db, 'companies', currentCompany.id, 'products', String(pr.id)));
       });
-      batch.commit().catch(err =>
-        handleFirestoreError(err, OperationType.DELETE, `companies/${currentCompany.id}/providers/${providerId}`)
-      );
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `companies/${currentCompany.id}/providers/${providerId}`);
+      }
     },
     [currentCompany, updateCurrentCompany, unlockedProviderId]
   );
@@ -2794,9 +2812,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           createdAt: serverTimestamp(),
         });
 
-        batch.commit().catch(err =>
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`)
-        );
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
+        }
 
         soundSynth.playSuccess(settings.enableSound);
         try {
@@ -2936,9 +2956,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           createdAt: serverTimestamp(),
         });
 
-        batch.commit().catch(err =>
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`)
-        );
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
+        }
 
         soundSynth.playSuccess(settings.enableSound);
         try {
@@ -3135,9 +3157,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             cartSnapshot,
             createdAt: serverTimestamp(),
           });
-          batch.commit().catch(err =>
-            handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`)
-          );
+          try {
+            await batch.commit();
+          } catch (err) {
+            handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
+          }
 
           setCart([]);
           soundSynth.playSuccess(settings.enableSound);
@@ -3252,9 +3276,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           cartSnapshot,
           createdAt: serverTimestamp(),
         });
-        batch.commit().catch(err =>
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`)
-        );
+        try {
+          await batch.commit();
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
+        }
 
         setCart([]);
         soundSynth.playSuccess(settings.enableSound);
