@@ -34,9 +34,23 @@ export const NfcModal: React.FC = () => {
   const [isSimOpen, setIsSimOpen] = useState<boolean>(false);
   const [manualUidInput, setManualUidInput] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [lastScannedTag, setLastScannedTag] = useState<string>('');
 
   const processingLockRef = useRef<boolean>(false);
+
+  // Refs to prevent NDEFReader.scan() from aborting/restarting on every cloud snapshot or keystroke
+  const nfcModalConfigRef = useRef(nfcModalConfig);
+  const currentCompanyRef = useRef(currentCompany);
+  const stickersRef = useRef(stickers);
+  const processNfcTapRef = useRef(processNfcTap);
+  const enableSoundRef = useRef(settings.enableSound);
+  const attendeeNameInputRef = useRef(attendeeNameInput);
+
+  nfcModalConfigRef.current = nfcModalConfig;
+  currentCompanyRef.current = currentCompany;
+  stickersRef.current = stickers;
+  processNfcTapRef.current = processNfcTap;
+  enableSoundRef.current = settings.enableSound;
+  attendeeNameInputRef.current = attendeeNameInput;
 
   // Reset state on open/close
   useEffect(() => {
@@ -47,7 +61,6 @@ export const NfcModal: React.FC = () => {
       setIsSimOpen(false);
       setManualUidInput('');
       setIsProcessing(false);
-      setLastScannedTag('');
       processingLockRef.current = false;
       return;
     }
@@ -57,11 +70,12 @@ export const NfcModal: React.FC = () => {
     }
   }, [isNfcModalOpen, nfcModalConfig]);
 
-  // Web NFC hardware scanning via NDEFReader (Chrome on Android)
+  // Web NFC hardware scanning via NDEFReader (Chrome on Android) — lifecycle tied ONLY to isNfcModalOpen
   useEffect(() => {
     if (!isNfcModalOpen) return;
 
     let abortController: AbortController | null = null;
+    let isDisposed = false;
 
     if (typeof window !== 'undefined' && 'NDEFReader' in window) {
       try {
@@ -72,17 +86,24 @@ export const NfcModal: React.FC = () => {
         ndef
           .scan({ signal: abortController.signal })
           .then(() => {
+            if (isDisposed) return;
             setIsWebNfcListening(true);
             setHardwareScanStatus('Antena NFC activa. Acerca la pulsera o tarjeta a la parte trasera del teléfono.');
 
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ndef.onreading = async (event: any) => {
-              if (processingLockRef.current) return;
+              if (isDisposed || processingLockRef.current) return;
               processingLockRef.current = true;
               setIsProcessing(true);
 
               try {
-                soundSynth.playNfcPing(settings.enableSound);
+                const activeConfig = nfcModalConfigRef.current;
+                const activeCompany = currentCompanyRef.current;
+                const activeStickers = stickersRef.current;
+                const soundEnabled = enableSoundRef.current;
+                const typedName = attendeeNameInputRef.current.trim();
+
+                soundSynth.playNfcPing(soundEnabled);
 
                 // 1. Extract physical hardware UID from chip
                 const rawSerial = (event.serialNumber || '').trim();
@@ -119,24 +140,23 @@ export const NfcModal: React.FC = () => {
                   : Math.random().toString(36).slice(2, 10).toUpperCase();
 
                 const finalTagId = tagPayloadId || `NFC-${cleanHex}`;
-                setLastScannedTag(finalTagId);
 
-                // 4. If tag is writable, attempt to record updated balance / tagId in NDEF chip memory
-                if (nfcModalConfig && currentCompany) {
-                  const existingSticker = stickers.find(
+                // 4. Optional physical NDEF mirror write (skip on QUERY so balance checks are instantaneous)
+                if (activeConfig && activeCompany && activeConfig.mode !== 'QUERY') {
+                  const existingSticker = activeStickers.find(
                     s =>
                       s.id.toLowerCase() === finalTagId.toLowerCase() ||
                       s.id.replace(/^NFC-/, '').toLowerCase() === finalTagId.replace(/^NFC-/, '').toLowerCase()
                   );
 
                   let newExpectedBalance = existingSticker ? existingSticker.balance : 0;
-                  if (nfcModalConfig.mode === 'RECHARGE') {
+                  if (activeConfig.mode === 'RECHARGE') {
                     newExpectedBalance = Number(
-                      ((existingSticker ? existingSticker.balance : 0) + nfcModalConfig.amountUSD).toFixed(2)
+                      ((existingSticker ? existingSticker.balance : 0) + activeConfig.amountUSD).toFixed(2)
                     );
-                  } else if (nfcModalConfig.mode === 'CHARGE' && currentCompany.eventMode !== 'CORPORATE') {
+                  } else if (activeConfig.mode === 'CHARGE' && activeCompany.eventMode !== 'CORPORATE') {
                     newExpectedBalance = Number(
-                      (Math.max(0, (existingSticker ? existingSticker.balance : 0) - nfcModalConfig.amountUSD)).toFixed(2)
+                      (Math.max(0, (existingSticker ? existingSticker.balance : 0) - activeConfig.amountUSD)).toFixed(2)
                     );
                   }
 
@@ -147,9 +167,9 @@ export const NfcModal: React.FC = () => {
                           recordType: 'text',
                           data: JSON.stringify({
                             app: 'PayStickerNFC',
-                            companyId: currentCompany.id,
+                            companyId: activeCompany.id,
                             tagId: finalTagId,
-                            eventMode: currentCompany.eventMode || 'CASHLESS',
+                            eventMode: activeCompany.eventMode || 'CASHLESS',
                             balance: newExpectedBalance,
                             onChipBalance: onChipBalance ?? newExpectedBalance,
                             updatedAt: Date.now(),
@@ -164,14 +184,19 @@ export const NfcModal: React.FC = () => {
                 }
 
                 // 5. Commit atomic transaction in Firestore / AppContext
-                await processNfcTap(finalTagId, attendeeNameInput.trim());
+                await processNfcTapRef.current(finalTagId, typedName);
+              } catch (err) {
+                console.warn('NFC reading processing error:', err);
               } finally {
-                setIsProcessing(false);
+                if (!isDisposed) {
+                  setIsProcessing(false);
+                }
                 processingLockRef.current = false;
               }
             };
           })
           .catch((err: unknown) => {
+            if (isDisposed) return;
             setIsWebNfcListening(false);
             setHardwareScanStatus('Antena NFC no disponible o permiso denegado.');
             console.warn('NDEFReader.scan error:', err);
@@ -186,19 +211,12 @@ export const NfcModal: React.FC = () => {
     }
 
     return () => {
+      isDisposed = true;
       if (abortController) {
         abortController.abort();
       }
     };
-  }, [
-    isNfcModalOpen,
-    nfcModalConfig,
-    currentCompany,
-    stickers,
-    processNfcTap,
-    settings.enableSound,
-    attendeeNameInput,
-  ]);
+  }, [isNfcModalOpen]);
 
   if (!isNfcModalOpen || !nfcModalConfig) return null;
 
@@ -225,6 +243,8 @@ export const NfcModal: React.FC = () => {
 
     try {
       await processNfcTap(simulatedId, attendeeNameInput.trim());
+    } catch (err) {
+      console.warn('Simulated NFC tap error:', err);
     } finally {
       setIsProcessing(false);
       processingLockRef.current = false;
@@ -424,7 +444,8 @@ export const NfcModal: React.FC = () => {
                     : '📱 Lector NFC Físico'}
                 </p>
                 <p className="text-[11px] leading-relaxed text-slate-600">
-                  Pega la pulsera o tarjeta NFC a la parte trasera del teléfono durante 1 segundo.
+                  {hardwareScanStatus ||
+                    'Pega la pulsera o tarjeta NFC a la parte trasera del teléfono durante 1 segundo.'}
                   {(isRecharge || isAssignQuota) &&
                     ' Si la pulsera es nueva, se activará y registrará automáticamente.'}
                 </p>

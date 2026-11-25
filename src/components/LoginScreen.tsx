@@ -215,35 +215,64 @@ export const LoginScreen: React.FC = () => {
                       {company.description || 'Ambiente NFC con control de caja y stands.'}
                     </p>
 
-                    {/* Quick stats */}
-                    <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80 mb-5 text-center">
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
-                          {isCorp ? 'Empleados' : 'Pulseras'}
-                        </span>
-                        <span className="text-sm font-black text-white font-mono">
-                          {company.stickers.length}
-                        </span>
+                    {/* Quick stats (lazy-loaded subcollections load upon entering the event) */}
+                    {company.stickers.length > 0 || company.products.length > 0 || company.transactions.length > 0 ? (
+                      <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80 mb-5 text-center">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            {isCorp ? 'Empleados' : 'Pulseras'}
+                          </span>
+                          <span className="text-sm font-black text-white font-mono">
+                            {company.stickers.length}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            {isCorp ? 'Beneficios' : 'Productos'}
+                          </span>
+                          <span className="text-sm font-black text-white font-mono">
+                            {isCorp ? company.employeeAllowances.length : company.products.length}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            {isCorp ? 'Consumo' : 'Flotante'}
+                          </span>
+                          <span className="text-sm font-black text-emerald-400 font-mono">
+                            {isCorp
+                              ? formatUSD(company.stickers.reduce((s, st) => s + (st.totalSpent || 0), 0))
+                              : formatUSD(totalBalance)}
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
-                          {isCorp ? 'Beneficios' : 'Productos'}
-                        </span>
-                        <span className="text-sm font-black text-white font-mono">
-                          {isCorp ? company.employeeAllowances.length : company.products.length}
-                        </span>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80 mb-5 text-center">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            {isCorp ? 'Beneficios' : 'Comisión'}
+                          </span>
+                          <span className="text-sm font-black text-white font-mono">
+                            {isCorp ? company.employeeAllowances.length : `${company.settings.eventCommissionRate}%`}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            Sistema
+                          </span>
+                          <span className="text-xs font-black text-blue-400">
+                            {isCorp ? 'Cupos NFC' : 'Cashless'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                            Nube
+                          </span>
+                          <span className="text-xs font-black text-emerald-400">
+                            En Vivo
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
-                          {isCorp ? 'Consumo' : 'Flotante'}
-                        </span>
-                        <span className="text-sm font-black text-emerald-400 font-mono">
-                          {isCorp
-                            ? formatUSD(company.stickers.reduce((s, st) => s + (st.totalSpent || 0), 0))
-                            : formatUSD(totalBalance)}
-                        </span>
-                      </div>
-                    </div>
+                    )}
                   </div>
 
                   {/* Login button */}

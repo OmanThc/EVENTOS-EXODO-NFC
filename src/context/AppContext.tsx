@@ -13,6 +13,7 @@ import {
   getDocs,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -314,6 +315,35 @@ const clampStr = (val: string | undefined, maxLen: number, fallback = ''): strin
   if (!trimmed) return fallback;
   return trimmed.slice(0, maxLen);
 };
+
+const generateUniqueSuffix = (len = 6): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID().replace(/-/g, '').slice(0, len).toUpperCase();
+    }
+  } catch {
+    // fallback
+  }
+  return (Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2))
+    .slice(0, len)
+    .toUpperCase();
+};
+
+class NfcBusinessError extends Error {
+  public readonly code: 'NOT_FOUND' | 'BLOCKED' | 'INSUFFICIENT_BALANCE' | 'QUOTA_EXCEEDED' | 'INVALID_PRODUCT';
+  public readonly payload: Record<string, unknown>;
+
+  constructor(
+    code: 'NOT_FOUND' | 'BLOCKED' | 'INSUFFICIENT_BALANCE' | 'QUOTA_EXCEEDED' | 'INVALID_PRODUCT',
+    message: string,
+    payload: Record<string, unknown> = {}
+  ) {
+    super(message);
+    this.name = 'NfcBusinessError';
+    this.code = code;
+    this.payload = payload;
+  }
+}
 
 const normalizeCompany = (c: Partial<Company>): Company => {
   const fallbackProviders: ProviderAccount[] = Array.isArray(c.providers)
@@ -696,6 +726,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       handleFirestoreError(error, OperationType.GET, 'platform_public/config');
     }
 
+    if (alreadySeeded) return;
+
     const companiesCol = collection(db, 'companies');
     let snap;
     try {
@@ -704,7 +736,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       handleFirestoreError(error, OperationType.LIST, 'companies');
     }
 
-    if (!snap.empty || alreadySeeded) return;
+    if (!snap.empty) return;
 
     try {
       await writeInitialCompaniesBatch(actorUid);
@@ -713,18 +745,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [writeInitialCompaniesBatch]);
 
-
-
-  // Always-on Firestore real-time synchronization across all devices (PCs & phones)
+  // Global Firestore real-time synchronization (platform config + lightweight companies index)
   useEffect(() => {
     let cancelled = false;
     const unsubs: Unsubscribe[] = [];
-    const currentSubUnsubs = subUnsubsRef.current;
-
-    const cleanupSubListeners = () => {
-      currentSubUnsubs.forEach(list => list.forEach(u => u()));
-      currentSubUnsubs.clear();
-    };
 
     const startSync = async () => {
       setIsCloudLoading(true);
@@ -814,14 +838,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await seedCompaniesIfEmpty(actorUid);
       if (cancelled) return;
 
-      // 3. Subscribe to ALL Companies in real time across every device
+      // 3. Subscribe to Companies index (1 document per event) across devices
       const companiesQuery = query(collection(db, 'companies'));
 
       const unsubCompanies = onSnapshot(
         companiesQuery,
         snapshot => {
           const docsMap = new Map<string, Company>();
-          const activeIds = new Set<string>();
           const expiredTrialIds: string[] = [];
           const nowMs = Date.now();
 
@@ -835,8 +858,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               expiredTrialIds.push(cid);
               return;
             }
-
-            activeIds.add(cid);
 
             docsMap.set(cid, {
               id: cid,
@@ -897,136 +918,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
           });
 
-          // Remove listeners for deleted companies
-          currentSubUnsubs.forEach((list, cid) => {
-            if (!activeIds.has(cid)) {
-              list.forEach(u => u());
-              currentSubUnsubs.delete(cid);
-            }
-          });
-
-          // Attach subcollection listeners for every active company
-          activeIds.forEach(cid => {
-            if (currentSubUnsubs.has(cid)) return;
-            const companySubUnsubs: Unsubscribe[] = [];
-
-            const makeSubQuery = (subName: string) => query(collection(db, 'companies', cid, subName));
-
-            // Providers
-            companySubUnsubs.push(
-              onSnapshot(
-                makeSubQuery('providers'),
-                subSnap => {
-                  const list: ProviderAccount[] = subSnap.docs.map(s => {
-                    const sd = s.data();
-                    return {
-                      id: s.id,
-                      brandName: sd.brandName,
-                      emoji: sd.emoji || '🏪',
-                      pin: sd.pin || '2001',
-                      createdAt:
-                        sd.createdAt && typeof sd.createdAt.toDate === 'function'
-                          ? sd.createdAt.toDate().toISOString().slice(0, 10)
-                          : new Date().toISOString().slice(0, 10),
-                    };
-                  });
-                  setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, providers: list } : c)));
-                },
-                error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/providers`)
-              )
-            );
-
-            // Stickers
-            companySubUnsubs.push(
-              onSnapshot(
-                makeSubQuery('stickers'),
-                subSnap => {
-                  const list: Sticker[] = subSnap.docs.map(s => {
-                    const sd = s.data();
-                    return {
-                      id: s.id,
-                      owner: sd.owner,
-                      department: sd.department || undefined,
-                      balance: Number(sd.balance) || 0,
-                      color: sd.color || 'from-blue-600 to-indigo-700',
-                      tagType: sd.tagType || 'NTAG215',
-                      status: sd.status || 'active',
-                      totalRecharged: Number(sd.totalRecharged) || 0,
-                      totalSpent: Number(sd.totalSpent) || 0,
-                      quotas: sd.quotas && typeof sd.quotas === 'object' ? sd.quotas : undefined,
-                      createdAt:
-                        sd.createdAt && typeof sd.createdAt.toDate === 'function'
-                          ? sd.createdAt.toDate().toISOString().slice(0, 16).replace('T', ' ')
-                          : new Date().toISOString().slice(0, 16).replace('T', ' '),
-                    };
-                  });
-                  setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, stickers: list } : c)));
-                },
-                error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/stickers`)
-              )
-            );
-
-            // Products
-            companySubUnsubs.push(
-              onSnapshot(
-                makeSubQuery('products'),
-                subSnap => {
-                  const list: Product[] = subSnap.docs.map(s => {
-                    const sd = s.data();
-                    const numericId = Number(s.id);
-                    return {
-                      id: !Number.isNaN(numericId)
-                        ? numericId
-                        : Math.abs(s.id.split('').reduce((a, ch) => a * 31 + ch.charCodeAt(0), 7)),
-                      name: sd.name,
-                      price: Number(sd.price) || 0,
-                      emoji: sd.emoji || '📦',
-                      imageUrl: sanitizeImageRef(sd.imageUrl, PRODUCT_IMAGE_MAX_CHARS),
-                      provider: sd.provider,
-                      category: sd.category || 'General',
-                      stock: sd.stock,
-                    };
-                  });
-                  setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, products: list } : c)));
-                },
-                error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/products`)
-              )
-            );
-
-            // Transactions
-            companySubUnsubs.push(
-              onSnapshot(
-                makeSubQuery('transactions'),
-                subSnap => {
-                  const list: Transaction[] = subSnap.docs
-                    .map(s => {
-                      const sd = s.data();
-                      return {
-                        id: s.id,
-                        type: sd.type,
-                        stickerId: sd.stickerId,
-                        owner: sd.owner,
-                        usd: Number(sd.usd) || 0,
-                        bs: Number(sd.bs) || 0,
-                        bcvRate: Number(sd.bcvRate) || 52.4,
-                        detail: sd.detail,
-                        provider: sd.provider,
-                        paymentMethod: sd.paymentMethod,
-                        time: sd.time,
-                        timestamp: Number(sd.timestamp) || Date.now(),
-                        cartSnapshot: sd.cartSnapshot,
-                      } as Transaction;
-                    })
-                    .sort((a, b) => b.timestamp - a.timestamp);
-                  setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, transactions: list } : c)));
-                },
-                error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/transactions`)
-              )
-            );
-
-            currentSubUnsubs.set(cid, companySubUnsubs);
-          });
-
           setIsCloudLoading(false);
         },
         error => {
@@ -1042,11 +933,171 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       cancelled = true;
       unsubs.forEach(u => u());
-      cleanupSubListeners();
     };
-  }, [firebaseUser, isBootstrappedAdminUser, seedCompaniesIfEmpty]);
+  }, [firebaseUser, isBootstrappedAdminUser, seedCompaniesIfEmpty, purgeExpiredTrialCompanies]);
 
-  // LocalStorage fallback sync (for offline resilience)
+  // Scoped Subcollection Sync: Only subscribe to the active event (or all events if SuperAdmin Maestro is open).
+  // Prevents read amplification & listener flood when 40+ concurrent devices are active.
+  const activeCompanyIdsKey = useMemo(
+    () =>
+      companies
+        .map(c => c.id)
+        .sort()
+        .join(','),
+    [companies]
+  );
+
+  useEffect(() => {
+    const currentSubUnsubs = subUnsubsRef.current;
+    const allKnownIds = new Set(activeCompanyIdsKey ? activeCompanyIdsKey.split(',') : []);
+
+    const targetIds = new Set<string>();
+    if (isSuperAdminDashboardOpen && isSuperAdminAuthenticated) {
+      allKnownIds.forEach(cid => targetIds.add(cid));
+    } else if (activeCompanyId && allKnownIds.has(activeCompanyId)) {
+      targetIds.add(activeCompanyId);
+    }
+
+    // Detach listeners for companies no longer in active scope
+    currentSubUnsubs.forEach((list, cid) => {
+      if (!targetIds.has(cid)) {
+        list.forEach(u => u());
+        currentSubUnsubs.delete(cid);
+      }
+    });
+
+    // Attach subcollection listeners only for targeted companies
+    targetIds.forEach(cid => {
+      if (currentSubUnsubs.has(cid)) return;
+      const companySubUnsubs: Unsubscribe[] = [];
+      const makeSubQuery = (subName: string) => query(collection(db, 'companies', cid, subName));
+
+      // Providers
+      companySubUnsubs.push(
+        onSnapshot(
+          makeSubQuery('providers'),
+          subSnap => {
+            const list: ProviderAccount[] = subSnap.docs.map(s => {
+              const sd = s.data();
+              return {
+                id: s.id,
+                brandName: sd.brandName,
+                emoji: sd.emoji || '🏪',
+                pin: sd.pin || '2001',
+                createdAt:
+                  sd.createdAt && typeof sd.createdAt.toDate === 'function'
+                    ? sd.createdAt.toDate().toISOString().slice(0, 10)
+                    : new Date().toISOString().slice(0, 10),
+              };
+            });
+            setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, providers: list } : c)));
+          },
+          error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/providers`)
+        )
+      );
+
+      // Stickers
+      companySubUnsubs.push(
+        onSnapshot(
+          makeSubQuery('stickers'),
+          subSnap => {
+            const list: Sticker[] = subSnap.docs.map(s => {
+              const sd = s.data();
+              return {
+                id: s.id,
+                owner: sd.owner,
+                department: sd.department || undefined,
+                balance: Number(sd.balance) || 0,
+                color: sd.color || 'from-blue-600 to-indigo-700',
+                tagType: sd.tagType || 'NTAG215',
+                status: sd.status || 'active',
+                totalRecharged: Number(sd.totalRecharged) || 0,
+                totalSpent: Number(sd.totalSpent) || 0,
+                quotas: sd.quotas && typeof sd.quotas === 'object' ? sd.quotas : undefined,
+                createdAt:
+                  sd.createdAt && typeof sd.createdAt.toDate === 'function'
+                    ? sd.createdAt.toDate().toISOString().slice(0, 16).replace('T', ' ')
+                    : new Date().toISOString().slice(0, 16).replace('T', ' '),
+              };
+            });
+            setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, stickers: list } : c)));
+          },
+          error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/stickers`)
+        )
+      );
+
+      // Products
+      companySubUnsubs.push(
+        onSnapshot(
+          makeSubQuery('products'),
+          subSnap => {
+            const list: Product[] = subSnap.docs.map(s => {
+              const sd = s.data();
+              const numericId = Number(s.id);
+              return {
+                id: !Number.isNaN(numericId)
+                  ? numericId
+                  : Math.abs(s.id.split('').reduce((a, ch) => a * 31 + ch.charCodeAt(0), 7)),
+                name: sd.name,
+                price: Number(sd.price) || 0,
+                emoji: sd.emoji || '📦',
+                imageUrl: sanitizeImageRef(sd.imageUrl, PRODUCT_IMAGE_MAX_CHARS),
+                provider: sd.provider,
+                category: sd.category || 'General',
+                stock: sd.stock,
+              };
+            });
+            setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, products: list } : c)));
+          },
+          error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/products`)
+        )
+      );
+
+      // Transactions
+      companySubUnsubs.push(
+        onSnapshot(
+          makeSubQuery('transactions'),
+          subSnap => {
+            const list: Transaction[] = subSnap.docs
+              .map(s => {
+                const sd = s.data();
+                return {
+                  id: s.id,
+                  type: sd.type,
+                  stickerId: sd.stickerId,
+                  owner: sd.owner,
+                  usd: Number(sd.usd) || 0,
+                  bs: Number(sd.bs) || 0,
+                  bcvRate: Number(sd.bcvRate) || 52.4,
+                  detail: sd.detail,
+                  provider: sd.provider,
+                  paymentMethod: sd.paymentMethod,
+                  time: sd.time,
+                  timestamp: Number(sd.timestamp) || Date.now(),
+                  cartSnapshot: sd.cartSnapshot,
+                } as Transaction;
+              })
+              .sort((a, b) => b.timestamp - a.timestamp);
+            setCompanies(prev => prev.map(c => (c.id === cid ? { ...c, transactions: list } : c)));
+          },
+          error => handleFirestoreError(error, OperationType.LIST, `companies/${cid}/transactions`)
+        )
+      );
+
+      currentSubUnsubs.set(cid, companySubUnsubs);
+    });
+  }, [activeCompanyId, isSuperAdminDashboardOpen, isSuperAdminAuthenticated, activeCompanyIdsKey]);
+
+  // Cleanup all subcollection listeners on unmount
+  useEffect(() => {
+    const currentSubUnsubs = subUnsubsRef.current;
+    return () => {
+      currentSubUnsubs.forEach(list => list.forEach(u => u()));
+      currentSubUnsubs.clear();
+    };
+  }, []);
+
+  // LocalStorage fallback sync (debounced & capped so 40+ devices never hit main-thread stutter or 5MB quota)
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.MASTER_SETTINGS, JSON.stringify(masterSettings));
@@ -1056,11 +1107,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [masterSettings]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(companies));
-    } catch {
-      // ignore
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        const compactCompanies = companies.map(c => ({
+          ...c,
+          transactions: c.transactions.slice(0, 100),
+        }));
+        localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(compactCompanies));
+      } catch {
+        // Fallback: strip large base64 images if QuotaExceededError
+        try {
+          const ultraCompact = companies.map(c => ({
+            ...c,
+            logoImage: undefined,
+            coverImage: undefined,
+            products: c.products.map(p => ({ ...p, imageUrl: undefined })),
+            transactions: c.transactions.slice(0, 50),
+          }));
+          localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(ultraCompact));
+        } catch {
+          // ignore
+        }
+      }
+    }, 1500);
+    return () => window.clearTimeout(timer);
   }, [companies]);
 
   useEffect(() => {
@@ -2387,7 +2457,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const cleanImg = sanitizeImageRef(prodData.imageUrl, PRODUCT_IMAGE_MAX_CHARS);
       const newProd: Product = {
         ...prodData,
-        id: Date.now(),
+        id: Date.now() * 100 + Math.floor(Math.random() * 100),
         name: clampStr(prodData.name, 120, 'Producto'),
         price: Math.max(0.1, Number(prodData.price.toFixed(2))),
         emoji: clampStr(prodData.emoji, 24, '📦'),
@@ -2406,7 +2476,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : [
                 ...c.providers,
                 {
-                  id: `prov-${Date.now().toString(36)}`,
+                  id: `prov-${Date.now().toString(36)}-${generateUniqueSuffix(4)}`,
                   brandName: newProd.provider,
                   emoji: newProd.emoji,
                   pin: '2001',
@@ -2549,24 +2619,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return currentCompany ? currentCompany.transactions : [];
   }, [currentCompany]);
 
-  const addTransaction = useCallback(
+  const buildTransactionRecord = useCallback(
     (txData: Omit<Transaction, 'id' | 'timestamp' | 'time'>): Transaction => {
       const now = Date.now();
-      const newTx: Transaction = {
+      return {
         ...txData,
-        id: `TX-${now.toString(36).toUpperCase()}-${Math.floor(100 + Math.random() * 900)}`,
+        id: `TX-${now.toString(36).toUpperCase()}-${generateUniqueSuffix(6)}`,
         timestamp: now,
         time: formatTime(now),
       };
+    },
+    []
+  );
 
+  const addTransaction = useCallback(
+    (txData: Omit<Transaction, 'id' | 'timestamp' | 'time'>): Transaction => {
+      const newTx = buildTransactionRecord(txData);
       updateCurrentCompany(c => ({
         ...c,
         transactions: [newTx, ...c.transactions],
       }));
-
       return newTx;
     },
-    [updateCurrentCompany]
+    [buildTransactionRecord, updateCurrentCompany]
   );
 
   // NFC Modals
@@ -2592,7 +2667,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsStickersDrawerOpen(prev => !prev);
   }, []);
 
-  // Process NFC Tap (Atomic Firestore Batch across Cashless & Corporate modes)
+  // Process NFC Tap (Atomic Firestore runTransaction when online + IndexedDB batch fallback when offline)
   const processNfcTap = useCallback(
     async (stickerId: string, customAttendeeName?: string): Promise<boolean> => {
       if (!nfcModalConfig || !currentCompany) return false;
@@ -2600,19 +2675,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const rawId = (stickerId || '').trim();
       const cleanId =
         rawId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) ||
-        `NFC-${Date.now().toString(36).slice(-6).toUpperCase()}`;
+        `NFC-${Date.now().toString(36).slice(-6).toUpperCase()}-${generateUniqueSuffix(4)}`;
 
-      const sticker = stickers.find(
+      const localSticker = stickers.find(
         s =>
           s.id.toLowerCase() === cleanId.toLowerCase() ||
           s.id.replace(/^NFC-/, '').toLowerCase() === cleanId.replace(/^NFC-/, '').toLowerCase()
       );
-
+      const targetStickerId = localSticker ? localSticker.id : cleanId;
       const isCorpMode = currentCompany.eventMode === 'CORPORATE';
+      const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+      const companyId = currentCompany.id;
+      const ownerUid = getCompanyOwnerUid(currentCompany);
+      const stickerRef = doc(db, 'companies', companyId, 'stickers', targetStickerId);
+
       closeNfcModal();
 
-      // 1. MODE: QUERY (Consulta de Saldo o Cupos NFC)
+      const mapStickerDoc = (id: string, sd: Record<string, unknown>): Sticker => ({
+        id,
+        owner: String(sd.owner || 'Cliente'),
+        department: sd.department ? String(sd.department) : undefined,
+        balance: Number(sd.balance) || 0,
+        color: String(sd.color || 'from-blue-600 to-indigo-700'),
+        tagType: (sd.tagType as Sticker['tagType']) || 'NTAG215',
+        status: sd.status === 'blocked' ? 'blocked' : 'active',
+        totalRecharged: Number(sd.totalRecharged) || 0,
+        totalSpent: Number(sd.totalSpent) || 0,
+        quotas: sd.quotas && typeof sd.quotas === 'object' ? (sd.quotas as Record<string, StickerQuotaProgress>) : undefined,
+        createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      });
+
+      const commitLocalUpdate = (activeSticker: Sticker, tx: Transaction, isNewTag: boolean) => {
+        updateCurrentCompany(comp => ({
+          ...comp,
+          stickers: isNewTag || !comp.stickers.some(s => s.id === activeSticker.id)
+            ? [...comp.stickers.filter(s => s.id !== activeSticker.id), activeSticker]
+            : comp.stickers.map(s => (s.id === activeSticker.id ? activeSticker : s)),
+          transactions: comp.transactions.some(t => t.id === tx.id)
+            ? comp.transactions
+            : [tx, ...comp.transactions],
+        }));
+      };
+
+      const handleNfcError = (err: unknown, txId?: string): false => {
+        if (err instanceof NfcBusinessError) {
+          soundSynth.playError(settings.enableSound);
+          const p = err.payload;
+          if (err.code === 'NOT_FOUND') {
+            setResultModal({
+              isOpen: true,
+              isSuccess: false,
+              title: isCorpMode ? 'Pulsera No Acreditada' : 'Pulsera No Registrada',
+              message: err.message,
+            });
+          } else if (err.code === 'BLOCKED') {
+            setResultModal({
+              isOpen: true,
+              isSuccess: false,
+              title: 'Pulsera Bloqueada',
+              message: err.message,
+            });
+          } else if (err.code === 'INSUFFICIENT_BALANCE') {
+            setResultModal({
+              isOpen: true,
+              isSuccess: false,
+              title: 'Saldo Insuficiente',
+              message: err.message,
+              details: {
+                stickerId: String(p.stickerId || targetStickerId),
+                owner: String(p.owner || ''),
+                prevBalance: Number(p.prevBalance || 0),
+                amountUSD: Number(p.amountUSD || 0),
+                missingUSD: Number(p.missingUSD || 0),
+                bcvRate: settings.bcvRate,
+              },
+            });
+          } else if (err.code === 'QUOTA_EXCEEDED' || err.code === 'INVALID_PRODUCT') {
+            setResultModal({
+              isOpen: true,
+              isSuccess: false,
+              title: err.code === 'INVALID_PRODUCT' ? 'Producto Fuera de Beneficio' : 'Cupo Agotado / Límite Excedido',
+              message: err.message,
+              details: {
+                stickerId: String(p.stickerId || targetStickerId),
+                owner: String(p.owner || ''),
+                department: p.department ? String(p.department) : undefined,
+                isCorporate: true,
+                quotas: p.quotas as Record<string, StickerQuotaProgress> | undefined,
+              },
+            });
+          }
+          return false;
+        }
+
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('insufficient')) {
+          handleFirestoreError(err, OperationType.WRITE, `companies/${companyId}/transactions/${txId || 'nfc'}`);
+        }
+
+        soundSynth.playError(settings.enableSound);
+        setResultModal({
+          isOpen: true,
+          isSuccess: false,
+          title: 'Error de Sincronización',
+          message: 'No se pudo completar la operación en la nube por conexión intermitente. Verifica tu señal e intenta de nuevo.',
+        });
+        return false;
+      };
+
+      // 1. MODE: QUERY (Consulta de Saldo o Cupos NFC - Authoritative server read when online)
       if (nfcModalConfig.mode === 'QUERY') {
+        let sticker = localSticker;
+        if (isOnline) {
+          try {
+            const snap = await getDoc(stickerRef);
+            if (snap.exists()) {
+              sticker = mapStickerDoc(snap.id, snap.data() as Record<string, unknown>);
+            }
+          } catch {
+            // Fall back to local cached sticker when network is temporarily unavailable
+          }
+        }
+
         if (!sticker) {
           soundSynth.playError(settings.enableSound);
           setResultModal({
@@ -2633,7 +2817,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             currentCompany.employeeAllowances,
             sticker.quotas
           );
-          // Merge any custom quotas stored directly on sticker not in current allowances
           if (sticker.quotas) {
             Object.entries(sticker.quotas).forEach(([k, v]) => {
               if (!effectiveQuotas[k]) {
@@ -2675,46 +2858,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return true;
       }
 
-      // Check if sticker is blocked
-      if (sticker && sticker.status === 'blocked') {
-        soundSynth.playError(settings.enableSound);
-        setResultModal({
-          isOpen: true,
-          isSuccess: false,
-          title: 'Pulsera Bloqueada',
-          message: `La pulsera ${sticker.id} de ${sticker.owner} se encuentra bloqueada por seguridad.`,
-        });
-        return false;
-      }
-
       // 2. MODE: ASSIGN_QUOTA (Corporate Caja Accreditation)
       if (nfcModalConfig.mode === 'ASSIGN_QUOTA') {
         const baseQuotas =
           nfcModalConfig.customQuotas ||
           buildQuotasFromAllowances(currentCompany.employeeAllowances);
-        const isNewTag = !sticker;
         const count = stickers.length + 1;
-        const shortHex = cleanId.replace(/^NFC-/, '').slice(-5).toUpperCase() || `${count}`;
-        const assignedOwner = clampStr(
-          (customAttendeeName || nfcModalConfig.customAttendeeName || sticker?.owner || '').trim(),
-          100,
-          `Empleado #${count} (${shortHex})`
-        );
-        const assignedDept = clampStr(
-          (nfcModalConfig.customDepartment || sticker?.department || 'General').trim(),
-          80,
-          'General'
-        );
-
-        const nextQuotas: Record<string, StickerQuotaProgress> = {};
-        Object.entries(baseQuotas).forEach(([k, q]) => {
-          const prevUsed = sticker?.quotas?.[k]?.used ?? 0;
-          nextQuotas[k] = {
-            ...q,
-            used: Math.min(q.allowed, prevUsed),
-          };
-        });
-
+        const shortHex = targetStickerId.replace(/^NFC-/, '').slice(-5).toUpperCase() || `${count}`;
+        const txBaseId = `TX-${Date.now().toString(36).toUpperCase()}-${generateUniqueSuffix(6)}`;
         const colors = [
           'from-blue-600 to-indigo-700',
           'from-emerald-600 to-teal-700',
@@ -2722,134 +2873,230 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'from-amber-600 to-orange-700',
         ];
 
-        const activeSticker: Sticker = isNewTag
-          ? {
-              id: cleanId,
-              owner: assignedOwner,
-              department: assignedDept,
-              balance: 0,
-              totalRecharged: 0,
-              totalSpent: 0,
-              color: colors[stickers.length % colors.length],
-              tagType: 'NTAG215',
-              status: 'active',
-              quotas: nextQuotas,
-              createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
-            }
-          : {
-              ...sticker,
-              owner: assignedOwner,
-              department: assignedDept,
-              quotas: nextQuotas,
+        const executeAssign = (
+          existingData: Record<string, unknown> | null
+        ): {
+          isNewTag: boolean;
+          activeSticker: Sticker;
+          nextQuotas: Record<string, StickerQuotaProgress>;
+          assignedDept: string;
+          quotaSummary: string;
+          tx: Transaction;
+        } => {
+          if (existingData && existingData.status === 'blocked') {
+            throw new NfcBusinessError(
+              'BLOCKED',
+              `La pulsera ${targetStickerId} de ${String(existingData.owner || 'Empleado')} se encuentra bloqueada por seguridad.`
+            );
+          }
+
+          const isNewTag = !existingData;
+          const existingOwner = existingData?.owner ? String(existingData.owner) : undefined;
+          const existingDept = existingData?.department ? String(existingData.department) : undefined;
+          const existingQuotas =
+            existingData?.quotas && typeof existingData.quotas === 'object'
+              ? (existingData.quotas as Record<string, StickerQuotaProgress>)
+              : undefined;
+
+          const assignedOwner = clampStr(
+            (customAttendeeName || nfcModalConfig.customAttendeeName || existingOwner || '').trim(),
+            100,
+            `Empleado #${count} (${shortHex})`
+          );
+          const assignedDept = clampStr(
+            (nfcModalConfig.customDepartment || existingDept || 'General').trim(),
+            80,
+            'General'
+          );
+
+          const nextQuotas: Record<string, StickerQuotaProgress> = {};
+          Object.entries(baseQuotas).forEach(([k, q]) => {
+            const prevUsed = existingQuotas?.[k]?.used ?? 0;
+            nextQuotas[k] = {
+              ...q,
+              used: Math.min(q.allowed, prevUsed),
             };
-
-        updateCurrentCompany(comp => ({
-          ...comp,
-          stickers: isNewTag
-            ? [...comp.stickers, activeSticker]
-            : comp.stickers.map(s => (s.id === sticker!.id ? activeSticker : s)),
-        }));
-
-        const quotaSummary = Object.values(nextQuotas)
-          .map(q => `${q.allowed}x ${q.label}`)
-          .join(', ');
-
-        const tx = addTransaction({
-          type: 'ASIGNACION',
-          stickerId: activeSticker.id,
-          owner: activeSticker.owner,
-          usd: 0,
-          bs: 0,
-          bcvRate: settings.bcvRate,
-          detail: quotaSummary
-            ? `Acreditación (${assignedDept}): ${quotaSummary}`
-            : `Acreditación corporativa (${assignedDept})`,
-          paymentMethod: 'Beneficio Corporativo',
-        });
-
-        const ownerUid = getCompanyOwnerUid(currentCompany);
-        const batch = writeBatch(db);
-        if (isNewTag) {
-          batch.set(doc(db, 'companies', currentCompany.id, 'stickers', activeSticker.id), {
-            id: activeSticker.id,
-            companyId: currentCompany.id,
-            ownerUid,
-            owner: activeSticker.owner,
-            department: assignedDept,
-            balance: 0,
-            color: activeSticker.color,
-            tagType: activeSticker.tagType,
-            status: activeSticker.status,
-            totalRecharged: 0,
-            totalSpent: 0,
-            quotas: nextQuotas,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
           });
-        } else {
-          batch.update(doc(db, 'companies', currentCompany.id, 'stickers', activeSticker.id), {
-            owner: activeSticker.owner,
-            department: assignedDept,
-            quotas: nextQuotas,
-            updatedAt: serverTimestamp(),
-          });
-        }
 
-        batch.set(doc(db, 'companies', currentCompany.id, 'transactions', tx.id), {
-          id: tx.id,
-          companyId: currentCompany.id,
-          ownerUid,
-          type: tx.type,
-          stickerId: tx.stickerId,
-          owner: clampStr(tx.owner, 100),
-          usd: 0,
-          bs: 0,
-          bcvRate: tx.bcvRate,
-          detail: clampStr(tx.detail, 500),
-          paymentMethod: 'Beneficio Corporativo',
-          time: tx.time,
-          timestamp: tx.timestamp,
-          createdAt: serverTimestamp(),
-        });
+          const activeSticker: Sticker = isNewTag
+            ? {
+                id: targetStickerId,
+                owner: assignedOwner,
+                department: assignedDept,
+                balance: 0,
+                totalRecharged: 0,
+                totalSpent: 0,
+                color: colors[stickers.length % colors.length],
+                tagType: 'NTAG215',
+                status: 'active',
+                quotas: nextQuotas,
+                createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+              }
+            : {
+                ...mapStickerDoc(targetStickerId, existingData!),
+                owner: assignedOwner,
+                department: assignedDept,
+                quotas: nextQuotas,
+              };
 
-        try {
-          await batch.commit();
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
-        }
+          const quotaSummary = Object.values(nextQuotas)
+            .map(q => `${q.allowed}x ${q.label}`)
+            .join(', ');
 
-        soundSynth.playSuccess(settings.enableSound);
-        try {
-          confetti({ particleCount: 55, spread: 60, origin: { y: 0.65 } });
-        } catch {
-          // ignore
-        }
-
-        setResultModal({
-          isOpen: true,
-          isSuccess: true,
-          title: isNewTag ? '¡Empleado Acreditado!' : '¡Cupos Actualizados!',
-          message: `La pulsera ${activeSticker.id} de ${activeSticker.owner} (${assignedDept}) está lista para retirar sus beneficios.`,
-          details: {
+          const now = Date.now();
+          const tx: Transaction = {
+            id: txBaseId,
+            type: 'ASIGNACION',
             stickerId: activeSticker.id,
             owner: activeSticker.owner,
-            department: assignedDept,
-            isCorporate: true,
-            quotas: nextQuotas,
-            detail: quotaSummary,
-          },
-          transaction: tx,
-        });
-        return true;
+            usd: 0,
+            bs: 0,
+            bcvRate: settings.bcvRate,
+            detail: quotaSummary
+              ? `Acreditación (${assignedDept}): ${quotaSummary}`
+              : `Acreditación corporativa (${assignedDept})`,
+            paymentMethod: 'Beneficio Corporativo',
+            timestamp: now,
+            time: formatTime(now),
+          };
+
+          return { isNewTag, activeSticker, nextQuotas, assignedDept, quotaSummary, tx };
+        };
+
+        try {
+          let outcome: ReturnType<typeof executeAssign>;
+          if (isOnline) {
+            outcome = await runTransaction(db, async txRunner => {
+              const snap = await txRunner.get(stickerRef);
+              const res = executeAssign(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+              if (res.isNewTag) {
+                txRunner.set(stickerRef, {
+                  id: res.activeSticker.id,
+                  companyId,
+                  ownerUid,
+                  owner: res.activeSticker.owner,
+                  department: res.assignedDept,
+                  balance: 0,
+                  color: res.activeSticker.color,
+                  tagType: res.activeSticker.tagType,
+                  status: res.activeSticker.status,
+                  totalRecharged: 0,
+                  totalSpent: 0,
+                  quotas: res.nextQuotas,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                txRunner.update(stickerRef, {
+                  owner: res.activeSticker.owner,
+                  department: res.assignedDept,
+                  quotas: res.nextQuotas,
+                  updatedAt: serverTimestamp(),
+                });
+              }
+              txRunner.set(doc(db, 'companies', companyId, 'transactions', res.tx.id), {
+                id: res.tx.id,
+                companyId,
+                ownerUid,
+                type: res.tx.type,
+                stickerId: res.tx.stickerId,
+                owner: clampStr(res.tx.owner, 100),
+                usd: 0,
+                bs: 0,
+                bcvRate: res.tx.bcvRate,
+                detail: clampStr(res.tx.detail, 500),
+                paymentMethod: 'Beneficio Corporativo',
+                time: res.tx.time,
+                timestamp: res.tx.timestamp,
+                createdAt: serverTimestamp(),
+              });
+              return res;
+            });
+          } else {
+            const existingOffline = localSticker ? ({ ...localSticker } as unknown as Record<string, unknown>) : null;
+            outcome = executeAssign(existingOffline);
+            const batch = writeBatch(db);
+            if (outcome.isNewTag) {
+              batch.set(stickerRef, {
+                id: outcome.activeSticker.id,
+                companyId,
+                ownerUid,
+                owner: outcome.activeSticker.owner,
+                department: outcome.assignedDept,
+                balance: 0,
+                color: outcome.activeSticker.color,
+                tagType: outcome.activeSticker.tagType,
+                status: outcome.activeSticker.status,
+                totalRecharged: 0,
+                totalSpent: 0,
+                quotas: outcome.nextQuotas,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              batch.update(stickerRef, {
+                owner: outcome.activeSticker.owner,
+                department: outcome.assignedDept,
+                quotas: outcome.nextQuotas,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            batch.set(doc(db, 'companies', companyId, 'transactions', outcome.tx.id), {
+              id: outcome.tx.id,
+              companyId,
+              ownerUid,
+              type: outcome.tx.type,
+              stickerId: outcome.tx.stickerId,
+              owner: clampStr(outcome.tx.owner, 100),
+              usd: 0,
+              bs: 0,
+              bcvRate: outcome.tx.bcvRate,
+              detail: clampStr(outcome.tx.detail, 500),
+              paymentMethod: 'Beneficio Corporativo',
+              time: outcome.tx.time,
+              timestamp: outcome.tx.timestamp,
+              createdAt: serverTimestamp(),
+            });
+            await batch.commit();
+          }
+
+          commitLocalUpdate(outcome.activeSticker, outcome.tx, outcome.isNewTag);
+          soundSynth.playSuccess(settings.enableSound);
+          try {
+            confetti({ particleCount: 55, spread: 60, origin: { y: 0.65 } });
+          } catch {
+            // ignore
+          }
+
+          setResultModal({
+            isOpen: true,
+            isSuccess: true,
+            title: outcome.isNewTag ? '¡Empleado Acreditado!' : '¡Cupos Actualizados!',
+            message: `La pulsera ${outcome.activeSticker.id} de ${outcome.activeSticker.owner} (${outcome.assignedDept}) está lista para retirar sus beneficios.`,
+            details: {
+              stickerId: outcome.activeSticker.id,
+              owner: outcome.activeSticker.owner,
+              department: outcome.assignedDept,
+              isCorporate: true,
+              quotas: outcome.nextQuotas,
+              detail: outcome.quotaSummary,
+            },
+            transaction: outcome.tx,
+          });
+          return true;
+        } catch (err) {
+          return handleNfcError(err, txBaseId);
+        }
       }
 
-      // 3. MODE: RECHARGE (Cashless Caja)
+      // 3. MODE: RECHARGE (Cashless Caja — Atomic Server Increment via runTransaction)
       if (nfcModalConfig.mode === 'RECHARGE') {
         const amountUSD = Number(nfcModalConfig.amountUSD.toFixed(2));
         const amountBs = Number((amountUSD * settings.bcvRate).toFixed(2));
-        const isNewTag = !sticker;
-
-        let activeSticker: Sticker;
+        const paymentMethod = nfcModalConfig.paymentMethod || 'Efectivo USD';
+        const txBaseId = `TX-${Date.now().toString(36).toUpperCase()}-${generateUniqueSuffix(6)}`;
+        const count = stickers.length + 1;
+        const shortHex = targetStickerId.replace(/^NFC-/, '').slice(-5).toUpperCase() || `${count}`;
         const colors = [
           'from-blue-600 to-indigo-700',
           'from-emerald-600 to-teal-700',
@@ -2859,158 +3106,204 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           'from-cyan-600 to-blue-700',
         ];
 
-        if (isNewTag) {
-          const count = stickers.length + 1;
-          const shortHex = cleanId.replace(/^NFC-/, '').slice(-5).toUpperCase() || `${count}`;
-          const assignedOwner =
-            (customAttendeeName || nfcModalConfig.customAttendeeName || '').trim() ||
-            `Pulsera #${count} (${shortHex})`;
+        const executeRecharge = (
+          existingData: Record<string, unknown> | null
+        ): {
+          isNewTag: boolean;
+          prevBalance: number;
+          activeSticker: Sticker;
+          tx: Transaction;
+        } => {
+          if (existingData && existingData.status === 'blocked') {
+            throw new NfcBusinessError(
+              'BLOCKED',
+              `La pulsera ${targetStickerId} de ${String(existingData.owner || 'Cliente')} se encuentra bloqueada por seguridad.`
+            );
+          }
 
-          activeSticker = {
-            id: cleanId,
-            owner: clampStr(assignedOwner, 100),
-            balance: amountUSD,
-            totalRecharged: amountUSD,
-            totalSpent: 0,
-            color: colors[stickers.length % colors.length],
-            tagType: 'NTAG215',
-            status: 'active',
-            createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
-          };
+          const isNewTag = !existingData;
+          let activeSticker: Sticker;
+          let prevBalance = 0;
 
-          updateCurrentCompany(comp => ({
-            ...comp,
-            stickers: [...comp.stickers, activeSticker],
-          }));
-        } else {
-          const prevBalance = sticker.balance;
-          const newBalance = Number((prevBalance + amountUSD).toFixed(2));
-          const nextTotalRecharged = Number(((sticker.totalRecharged || 0) + amountUSD).toFixed(2));
+          if (isNewTag) {
+            const assignedOwner =
+              (customAttendeeName || nfcModalConfig.customAttendeeName || '').trim() ||
+              `Pulsera #${count} (${shortHex})`;
 
-          activeSticker = {
-            ...sticker,
-            balance: newBalance,
-            totalRecharged: nextTotalRecharged,
-          };
+            activeSticker = {
+              id: targetStickerId,
+              owner: clampStr(assignedOwner, 100),
+              balance: amountUSD,
+              totalRecharged: amountUSD,
+              totalSpent: 0,
+              color: colors[stickers.length % colors.length],
+              tagType: 'NTAG215',
+              status: 'active',
+              createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+            };
+          } else {
+            prevBalance = Number(existingData!.balance) || 0;
+            const newBalance = Number((prevBalance + amountUSD).toFixed(2));
+            const nextTotalRecharged = Number(((Number(existingData!.totalRecharged) || 0) + amountUSD).toFixed(2));
 
-          updateCurrentCompany(comp => ({
-            ...comp,
-            stickers: comp.stickers.map(s => (s.id === sticker!.id ? activeSticker : s)),
-          }));
-        }
+            activeSticker = {
+              ...mapStickerDoc(targetStickerId, existingData!),
+              balance: newBalance,
+              totalRecharged: nextTotalRecharged,
+            };
+          }
 
-        const paymentMethod = nfcModalConfig.paymentMethod || 'Efectivo USD';
-        const tx = addTransaction({
-          type: 'RECARGA',
-          stickerId: activeSticker.id,
-          owner: activeSticker.owner,
-          usd: amountUSD,
-          bs: amountBs,
-          bcvRate: settings.bcvRate,
-          detail: isNewTag
-            ? `Activación y Primera Recarga en Caja (${paymentMethod})`
-            : `Recarga en Caja (${paymentMethod})`,
-          paymentMethod,
-        });
-
-        const ownerUid = getCompanyOwnerUid(currentCompany);
-        const batch = writeBatch(db);
-
-        if (isNewTag) {
-          batch.set(doc(db, 'companies', currentCompany.id, 'stickers', activeSticker.id), {
-            id: activeSticker.id,
-            companyId: currentCompany.id,
-            ownerUid,
-            owner: clampStr(activeSticker.owner, 100),
-            balance: activeSticker.balance,
-            color: activeSticker.color,
-            tagType: activeSticker.tagType,
-            status: activeSticker.status,
-            totalRecharged: activeSticker.totalRecharged,
-            totalSpent: activeSticker.totalSpent,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } else {
-          batch.update(doc(db, 'companies', currentCompany.id, 'stickers', activeSticker.id), {
-            balance: activeSticker.balance,
-            totalRecharged: activeSticker.totalRecharged,
-            updatedAt: serverTimestamp(),
-          });
-        }
-
-        batch.set(doc(db, 'companies', currentCompany.id, 'transactions', tx.id), {
-          id: tx.id,
-          companyId: currentCompany.id,
-          ownerUid,
-          type: tx.type,
-          stickerId: tx.stickerId,
-          owner: clampStr(tx.owner, 100),
-          usd: tx.usd,
-          bs: tx.bs,
-          bcvRate: tx.bcvRate,
-          detail: clampStr(tx.detail, 500),
-          paymentMethod: paymentMethod.slice(0, 60),
-          time: tx.time,
-          timestamp: tx.timestamp,
-          createdAt: serverTimestamp(),
-        });
-
-        try {
-          await batch.commit();
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
-        }
-
-        soundSynth.playSuccess(settings.enableSound);
-        try {
-          confetti({
-            particleCount: 65,
-            spread: 60,
-            origin: { y: 0.65 },
-          });
-        } catch {
-          // ignore
-        }
-
-        setResultModal({
-          isOpen: true,
-          isSuccess: true,
-          title: isNewTag ? '¡Pulsera Activada y Cargada!' : '¡Recarga Exitosa!',
-          message: isNewTag
-            ? `Se ha activado la pulsera ${activeSticker.id} de ${activeSticker.owner} con ${formatUSD(amountUSD)} de saldo inicial.`
-            : `Se han acreditado ${formatUSD(amountUSD)} a ${activeSticker.owner}.`,
-          details: {
+          const now = Date.now();
+          const tx: Transaction = {
+            id: txBaseId,
+            type: 'RECARGA',
             stickerId: activeSticker.id,
             owner: activeSticker.owner,
-            amountUSD,
-            amountBs,
-            prevBalance: isNewTag ? 0 : sticker!.balance,
-            newBalance: activeSticker.balance,
+            usd: amountUSD,
+            bs: amountBs,
             bcvRate: settings.bcvRate,
-            detail: isNewTag ? `Activación nueva • Método: ${paymentMethod}` : `Método: ${paymentMethod}`,
-          },
-          transaction: tx,
-        });
+            detail: isNewTag
+              ? `Activación y Primera Recarga en Caja (${paymentMethod})`
+              : `Recarga en Caja (${paymentMethod})`,
+            paymentMethod,
+            timestamp: now,
+            time: formatTime(now),
+          };
 
-        return true;
-      }
+          return { isNewTag, prevBalance, activeSticker, tx };
+        };
 
-      // 4. MODE: CHARGE (Proveedores / Stands — Handles both CASHLESS and CORPORATE)
-      if (nfcModalConfig.mode === 'CHARGE') {
-        if (!sticker) {
-          soundSynth.playError(settings.enableSound);
+        try {
+          let outcome: ReturnType<typeof executeRecharge>;
+          if (isOnline) {
+            outcome = await runTransaction(db, async txRunner => {
+              const snap = await txRunner.get(stickerRef);
+              const res = executeRecharge(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+              if (res.isNewTag) {
+                txRunner.set(stickerRef, {
+                  id: res.activeSticker.id,
+                  companyId,
+                  ownerUid,
+                  owner: clampStr(res.activeSticker.owner, 100),
+                  balance: res.activeSticker.balance,
+                  color: res.activeSticker.color,
+                  tagType: res.activeSticker.tagType,
+                  status: res.activeSticker.status,
+                  totalRecharged: res.activeSticker.totalRecharged,
+                  totalSpent: res.activeSticker.totalSpent,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                txRunner.update(stickerRef, {
+                  balance: res.activeSticker.balance,
+                  totalRecharged: res.activeSticker.totalRecharged,
+                  updatedAt: serverTimestamp(),
+                });
+              }
+              txRunner.set(doc(db, 'companies', companyId, 'transactions', res.tx.id), {
+                id: res.tx.id,
+                companyId,
+                ownerUid,
+                type: res.tx.type,
+                stickerId: res.tx.stickerId,
+                owner: clampStr(res.tx.owner, 100),
+                usd: res.tx.usd,
+                bs: res.tx.bs,
+                bcvRate: res.tx.bcvRate,
+                detail: clampStr(res.tx.detail, 500),
+                paymentMethod: paymentMethod.slice(0, 60),
+                time: res.tx.time,
+                timestamp: res.tx.timestamp,
+                createdAt: serverTimestamp(),
+              });
+              return res;
+            });
+          } else {
+            const existingOffline = localSticker ? ({ ...localSticker } as unknown as Record<string, unknown>) : null;
+            outcome = executeRecharge(existingOffline);
+            const batch = writeBatch(db);
+            if (outcome.isNewTag) {
+              batch.set(stickerRef, {
+                id: outcome.activeSticker.id,
+                companyId,
+                ownerUid,
+                owner: clampStr(outcome.activeSticker.owner, 100),
+                balance: outcome.activeSticker.balance,
+                color: outcome.activeSticker.color,
+                tagType: outcome.activeSticker.tagType,
+                status: outcome.activeSticker.status,
+                totalRecharged: outcome.activeSticker.totalRecharged,
+                totalSpent: outcome.activeSticker.totalSpent,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              batch.update(stickerRef, {
+                balance: outcome.activeSticker.balance,
+                totalRecharged: outcome.activeSticker.totalRecharged,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            batch.set(doc(db, 'companies', companyId, 'transactions', outcome.tx.id), {
+              id: outcome.tx.id,
+              companyId,
+              ownerUid,
+              type: outcome.tx.type,
+              stickerId: outcome.tx.stickerId,
+              owner: clampStr(outcome.tx.owner, 100),
+              usd: outcome.tx.usd,
+              bs: outcome.tx.bs,
+              bcvRate: outcome.tx.bcvRate,
+              detail: clampStr(outcome.tx.detail, 500),
+              paymentMethod: paymentMethod.slice(0, 60),
+              time: outcome.tx.time,
+              timestamp: outcome.tx.timestamp,
+              createdAt: serverTimestamp(),
+            });
+            await batch.commit();
+          }
+
+          commitLocalUpdate(outcome.activeSticker, outcome.tx, outcome.isNewTag);
+          soundSynth.playSuccess(settings.enableSound);
+          try {
+            confetti({
+              particleCount: 65,
+              spread: 60,
+              origin: { y: 0.65 },
+            });
+          } catch {
+            // ignore
+          }
+
           setResultModal({
             isOpen: true,
-            isSuccess: false,
-            title: isCorpMode ? 'Pulsera No Acreditada' : 'Pulsera No Registrada',
-            message: isCorpMode
-              ? `La pulsera NFC (${cleanId}) no está acreditada para este evento empresarial. El empleado debe acudir primero a Acreditación / Caja.`
-              : `La pulsera NFC (${cleanId}) no está activada en el sistema. El cliente debe acudir a Caja primero para registrarla y recargar saldo.`,
+            isSuccess: true,
+            title: outcome.isNewTag ? '¡Pulsera Activada y Cargada!' : '¡Recarga Exitosa!',
+            message: outcome.isNewTag
+              ? `Se ha activado la pulsera ${outcome.activeSticker.id} de ${outcome.activeSticker.owner} con ${formatUSD(amountUSD)} de saldo inicial.`
+              : `Se han acreditado ${formatUSD(amountUSD)} a ${outcome.activeSticker.owner}.`,
+            details: {
+              stickerId: outcome.activeSticker.id,
+              owner: outcome.activeSticker.owner,
+              amountUSD,
+              amountBs,
+              prevBalance: outcome.prevBalance,
+              newBalance: outcome.activeSticker.balance,
+              bcvRate: settings.bcvRate,
+              detail: outcome.isNewTag ? `Activación nueva • Método: ${paymentMethod}` : `Método: ${paymentMethod}`,
+            },
+            transaction: outcome.tx,
           });
-          return false;
-        }
 
+          return true;
+        } catch (err) {
+          return handleNfcError(err, txBaseId);
+        }
+      }
+
+      // 4. MODE: CHARGE (Proveedores / Stands — Atomic runTransaction for both CASHLESS & CORPORATE)
+      if (nfcModalConfig.mode === 'CHARGE') {
         const totalUSD = Number(nfcModalConfig.amountUSD.toFixed(2));
         const amountBs = Number((totalUSD * settings.bcvRate).toFixed(2));
         const summaryItems = cart.map(i => `${i.qty}x ${i.product.name}`).join(', ');
@@ -3022,147 +3315,263 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           provider: i.product.provider,
         }));
         const provider = activeProvider?.brandName || (cart.length > 0 ? cart[0].product.provider : 'Varios');
+        const txBaseId = `TX-${Date.now().toString(36).toUpperCase()}-${generateUniqueSuffix(6)}`;
 
-        // 4A. CORPORATE MODE QUOTA VERIFICATION & DEDUCTION
-        if (isCorpMode) {
-          const currentQuotas: Record<string, StickerQuotaProgress> = buildQuotasFromAllowances(
-            currentCompany.employeeAllowances,
-            sticker.quotas
-          );
-          if (sticker.quotas) {
-            Object.entries(sticker.quotas).forEach(([k, v]) => {
-              if (!currentQuotas[k]) {
-                currentQuotas[k] = { ...v };
-              }
-            });
+        const executeCharge = (existingData: Record<string, unknown> | null) => {
+          if (!existingData) {
+            throw new NfcBusinessError(
+              'NOT_FOUND',
+              isCorpMode
+                ? `La pulsera NFC (${cleanId}) no está acreditada para este evento empresarial. El empleado debe acudir primero a Acreditación / Caja.`
+                : `La pulsera NFC (${cleanId}) no está activada en el sistema. El cliente debe acudir a Caja primero para registrarla y recargar saldo.`
+            );
           }
 
-          const quotaList = Object.values(currentQuotas);
-          const requestedByRule: Record<string, number> = {};
+          if (existingData.status === 'blocked') {
+            throw new NfcBusinessError(
+              'BLOCKED',
+              `La pulsera ${targetStickerId} de ${String(existingData.owner || 'Cliente')} se encuentra bloqueada por seguridad.`
+            );
+          }
 
-          for (const item of cart) {
-            const prodIdStr = String(item.product.id);
-            const catLower = (item.product.category || 'General').trim().toLowerCase();
+          const serverSticker = mapStickerDoc(targetStickerId, existingData);
 
-            const matchedRule =
-              quotaList.find(q => q.matchType === 'PRODUCT' && q.matchValue === prodIdStr) ||
-              quotaList.find(
-                q => q.matchType === 'CATEGORY' && q.matchValue.trim().toLowerCase() === catLower
-              );
-
-            if (!matchedRule) {
-              soundSynth.playError(settings.enableSound);
-              setResultModal({
-                isOpen: true,
-                isSuccess: false,
-                title: 'Producto Fuera de Beneficio',
-                message: `El artículo "${item.product.name}" (${item.product.category || 'General'}) no está incluido en las reglas de beneficios configuradas para este evento.`,
-                details: {
-                  stickerId: sticker.id,
-                  owner: sticker.owner,
-                  department: sticker.department,
-                  isCorporate: true,
-                  quotas: currentQuotas,
-                },
+          if (isCorpMode) {
+            const currentQuotas: Record<string, StickerQuotaProgress> = buildQuotasFromAllowances(
+              currentCompany.employeeAllowances,
+              serverSticker.quotas
+            );
+            if (serverSticker.quotas) {
+              Object.entries(serverSticker.quotas).forEach(([k, v]) => {
+                if (!currentQuotas[k]) {
+                  currentQuotas[k] = { ...v };
+                }
               });
-              return false;
             }
 
-            requestedByRule[matchedRule.ruleId] = (requestedByRule[matchedRule.ruleId] || 0) + item.qty;
-          }
+            const quotaList = Object.values(currentQuotas);
+            const requestedByRule: Record<string, number> = {};
 
-          // Validate quota limits before applying any deduction
-          for (const [ruleId, reqQty] of Object.entries(requestedByRule)) {
-            const rule = currentQuotas[ruleId];
-            const remaining = Math.max(0, rule.allowed - rule.used);
-            if (rule.used + reqQty > rule.allowed) {
-              soundSynth.playError(settings.enableSound);
-              setResultModal({
-                isOpen: true,
-                isSuccess: false,
-                title: 'Cupo Agotado / Límite Excedido',
-                message: `${sticker.owner} solo tiene ${remaining} de ${rule.allowed} ${rule.emoji} ${rule.label} disponibles (intenta retirar ${reqQty}).`,
-                details: {
-                  stickerId: sticker.id,
-                  owner: sticker.owner,
-                  department: sticker.department,
-                  isCorporate: true,
-                  quotas: currentQuotas,
-                },
-              });
-              return false;
-            }
-          }
+            for (const item of cart) {
+              const prodIdStr = String(item.product.id);
+              const catLower = (item.product.category || 'General').trim().toLowerCase();
 
-          // Apply atomic quota deduction
-          const nextQuotas: Record<string, StickerQuotaProgress> = {};
-          Object.entries(currentQuotas).forEach(([ruleId, q]) => {
-            const delta = requestedByRule[ruleId] || 0;
-            nextQuotas[ruleId] = {
-              ...q,
-              used: q.used + delta,
-            };
-          });
+              const matchedRule =
+                quotaList.find(q => q.matchType === 'PRODUCT' && q.matchValue === prodIdStr) ||
+                quotaList.find(
+                  q => q.matchType === 'CATEGORY' && q.matchValue.trim().toLowerCase() === catLower
+                );
 
-          const nextTotalSpent = Number(((sticker.totalSpent || 0) + totalUSD).toFixed(2));
-
-          updateCurrentCompany(comp => ({
-            ...comp,
-            stickers: comp.stickers.map(s =>
-              s.id === sticker!.id
-                ? {
-                    ...s,
-                    quotas: nextQuotas,
-                    totalSpent: nextTotalSpent,
+              if (!matchedRule) {
+                throw new NfcBusinessError(
+                  'INVALID_PRODUCT',
+                  `El artículo "${item.product.name}" (${item.product.category || 'General'}) no está incluido en las reglas de beneficios configuradas para este evento.`,
+                  {
+                    stickerId: serverSticker.id,
+                    owner: serverSticker.owner,
+                    department: serverSticker.department,
+                    quotas: currentQuotas,
                   }
-                : s
-            ),
-          }));
+                );
+              }
 
-          const tx = addTransaction({
-            type: 'RETIRO',
-            stickerId: sticker.id,
-            owner: sticker.owner,
-            usd: totalUSD,
-            bs: amountBs,
-            bcvRate: settings.bcvRate,
-            detail: summaryItems || 'Entrega de Beneficio Corporativo',
-            provider,
-            paymentMethod: 'Beneficio Corporativo',
-            cartSnapshot,
-          });
+              requestedByRule[matchedRule.ruleId] = (requestedByRule[matchedRule.ruleId] || 0) + item.qty;
+            }
 
-          const ownerUid = getCompanyOwnerUid(currentCompany);
-          const batch = writeBatch(db);
-          batch.update(doc(db, 'companies', currentCompany.id, 'stickers', sticker.id), {
-            quotas: nextQuotas,
-            totalSpent: nextTotalSpent,
-            updatedAt: serverTimestamp(),
-          });
-          batch.set(doc(db, 'companies', currentCompany.id, 'transactions', tx.id), {
-            id: tx.id,
-            companyId: currentCompany.id,
-            ownerUid,
-            type: tx.type,
-            stickerId: tx.stickerId,
-            owner: clampStr(tx.owner, 100),
-            usd: tx.usd,
-            bs: tx.bs,
-            bcvRate: tx.bcvRate,
-            detail: clampStr(tx.detail, 500),
-            provider: clampStr(provider, 100),
-            paymentMethod: 'Beneficio Corporativo',
-            time: tx.time,
-            timestamp: tx.timestamp,
-            cartSnapshot,
-            createdAt: serverTimestamp(),
-          });
-          try {
+            for (const [ruleId, reqQty] of Object.entries(requestedByRule)) {
+              const rule = currentQuotas[ruleId];
+              const remaining = Math.max(0, rule.allowed - rule.used);
+              if (rule.used + reqQty > rule.allowed) {
+                throw new NfcBusinessError(
+                  'QUOTA_EXCEEDED',
+                  `${serverSticker.owner} solo tiene ${remaining} de ${rule.allowed} ${rule.emoji} ${rule.label} disponibles (intenta retirar ${reqQty}).`,
+                  {
+                    stickerId: serverSticker.id,
+                    owner: serverSticker.owner,
+                    department: serverSticker.department,
+                    quotas: currentQuotas,
+                  }
+                );
+              }
+            }
+
+            const nextQuotas: Record<string, StickerQuotaProgress> = {};
+            Object.entries(currentQuotas).forEach(([ruleId, q]) => {
+              const delta = requestedByRule[ruleId] || 0;
+              nextQuotas[ruleId] = {
+                ...q,
+                used: q.used + delta,
+              };
+            });
+
+            const nextTotalSpent = Number(((serverSticker.totalSpent || 0) + totalUSD).toFixed(2));
+            const updatedSticker: Sticker = {
+              ...serverSticker,
+              quotas: nextQuotas,
+              totalSpent: nextTotalSpent,
+            };
+
+            const now = Date.now();
+            const tx: Transaction = {
+              id: txBaseId,
+              type: 'RETIRO',
+              stickerId: serverSticker.id,
+              owner: serverSticker.owner,
+              usd: totalUSD,
+              bs: amountBs,
+              bcvRate: settings.bcvRate,
+              detail: summaryItems || 'Entrega de Beneficio Corporativo',
+              provider,
+              paymentMethod: 'Beneficio Corporativo',
+              cartSnapshot,
+              timestamp: now,
+              time: formatTime(now),
+            };
+
+            return {
+              mode: 'CORPORATE' as const,
+              prevBalance: serverSticker.balance,
+              updatedSticker,
+              nextQuotas,
+              tx,
+            };
+          } else {
+            const prevBalance = serverSticker.balance;
+            if (prevBalance < totalUSD) {
+              const missingUSD = Number((totalUSD - prevBalance).toFixed(2));
+              throw new NfcBusinessError(
+                'INSUFFICIENT_BALANCE',
+                `La pulsera de ${serverSticker.owner} no cuenta con fondos suficientes para pagar esta orden.`,
+                {
+                  stickerId: serverSticker.id,
+                  owner: serverSticker.owner,
+                  prevBalance,
+                  amountUSD: totalUSD,
+                  missingUSD,
+                }
+              );
+            }
+
+            const newBalance = Number((prevBalance - totalUSD).toFixed(2));
+            const nextTotalSpent = Number(((serverSticker.totalSpent || 0) + totalUSD).toFixed(2));
+            const updatedSticker: Sticker = {
+              ...serverSticker,
+              balance: newBalance,
+              totalSpent: nextTotalSpent,
+            };
+
+            const now = Date.now();
+            const tx: Transaction = {
+              id: txBaseId,
+              type: 'CONSUMO',
+              stickerId: serverSticker.id,
+              owner: serverSticker.owner,
+              usd: totalUSD,
+              bs: amountBs,
+              bcvRate: settings.bcvRate,
+              detail: summaryItems || 'Consumo en Stand',
+              provider,
+              cartSnapshot,
+              timestamp: now,
+              time: formatTime(now),
+            };
+
+            return {
+              mode: 'CASHLESS' as const,
+              prevBalance,
+              updatedSticker,
+              nextQuotas: undefined,
+              tx,
+            };
+          }
+        };
+
+        try {
+          let outcome: ReturnType<typeof executeCharge>;
+          if (isOnline) {
+            outcome = await runTransaction(db, async txRunner => {
+              const snap = await txRunner.get(stickerRef);
+              const res = executeCharge(snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+
+              if (res.mode === 'CORPORATE') {
+                txRunner.update(stickerRef, {
+                  quotas: res.nextQuotas,
+                  totalSpent: res.updatedSticker.totalSpent,
+                  updatedAt: serverTimestamp(),
+                });
+              } else {
+                txRunner.update(stickerRef, {
+                  balance: res.updatedSticker.balance,
+                  totalSpent: res.updatedSticker.totalSpent,
+                  updatedAt: serverTimestamp(),
+                });
+              }
+
+              const txPayload: Record<string, unknown> = {
+                id: res.tx.id,
+                companyId,
+                ownerUid,
+                type: res.tx.type,
+                stickerId: res.tx.stickerId,
+                owner: clampStr(res.tx.owner, 100),
+                usd: res.tx.usd,
+                bs: res.tx.bs,
+                bcvRate: res.tx.bcvRate,
+                detail: clampStr(res.tx.detail, 500),
+                provider: clampStr(provider, 100),
+                time: res.tx.time,
+                timestamp: res.tx.timestamp,
+                cartSnapshot,
+                createdAt: serverTimestamp(),
+              };
+              if (res.mode === 'CORPORATE') {
+                txPayload.paymentMethod = 'Beneficio Corporativo';
+              }
+              txRunner.set(doc(db, 'companies', companyId, 'transactions', res.tx.id), txPayload);
+              return res;
+            });
+          } else {
+            const existingOffline = localSticker ? ({ ...localSticker } as unknown as Record<string, unknown>) : null;
+            outcome = executeCharge(existingOffline);
+            const batch = writeBatch(db);
+            if (outcome.mode === 'CORPORATE') {
+              batch.update(stickerRef, {
+                quotas: outcome.nextQuotas,
+                totalSpent: outcome.updatedSticker.totalSpent,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              batch.update(stickerRef, {
+                balance: outcome.updatedSticker.balance,
+                totalSpent: outcome.updatedSticker.totalSpent,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            const txPayload: Record<string, unknown> = {
+              id: outcome.tx.id,
+              companyId,
+              ownerUid,
+              type: outcome.tx.type,
+              stickerId: outcome.tx.stickerId,
+              owner: clampStr(outcome.tx.owner, 100),
+              usd: outcome.tx.usd,
+              bs: outcome.tx.bs,
+              bcvRate: outcome.tx.bcvRate,
+              detail: clampStr(outcome.tx.detail, 500),
+              provider: clampStr(provider, 100),
+              time: outcome.tx.time,
+              timestamp: outcome.tx.timestamp,
+              cartSnapshot,
+              createdAt: serverTimestamp(),
+            };
+            if (outcome.mode === 'CORPORATE') {
+              txPayload.paymentMethod = 'Beneficio Corporativo';
+            }
+            batch.set(doc(db, 'companies', companyId, 'transactions', outcome.tx.id), txPayload);
             await batch.commit();
-          } catch (err) {
-            handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
           }
 
+          commitLocalUpdate(outcome.updatedSticker, outcome.tx, false);
           setCart([]);
           soundSynth.playSuccess(settings.enableSound);
           try {
@@ -3170,150 +3579,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               particleCount: 50,
               spread: 70,
               origin: { y: 0.6 },
-              colors: ['#10b981', '#34d399', '#2563eb', '#60a5fa'],
+              colors:
+                outcome.mode === 'CORPORATE'
+                  ? ['#10b981', '#34d399', '#2563eb', '#60a5fa']
+                  : ['#10b981', '#34d399', '#6ee7b7', '#2563eb'],
             });
           } catch {
             // ignore
           }
 
-          setResultModal({
-            isOpen: true,
-            isSuccess: true,
-            title: '¡Entrega Corporativa Aprobada!',
-            message: `Beneficio descontado de la pulsera de ${sticker.owner}. Sin cobro al empleado.`,
-            details: {
-              stickerId: sticker.id,
-              owner: sticker.owner,
-              department: sticker.department,
-              amountUSD: totalUSD,
-              amountBs,
-              detail: summaryItems,
-              bcvRate: settings.bcvRate,
-              isCorporate: true,
-              quotas: nextQuotas,
-              consumedItems: cart.map(i => `${i.qty}x ${i.product.emoji} ${i.product.name}`),
-            },
-            transaction: tx,
-          });
+          if (outcome.mode === 'CORPORATE') {
+            setResultModal({
+              isOpen: true,
+              isSuccess: true,
+              title: '¡Entrega Corporativa Aprobada!',
+              message: `Beneficio descontado de la pulsera de ${outcome.updatedSticker.owner}. Sin cobro al empleado.`,
+              details: {
+                stickerId: outcome.updatedSticker.id,
+                owner: outcome.updatedSticker.owner,
+                department: outcome.updatedSticker.department,
+                amountUSD: totalUSD,
+                amountBs,
+                detail: summaryItems,
+                bcvRate: settings.bcvRate,
+                isCorporate: true,
+                quotas: outcome.nextQuotas,
+                consumedItems: cart.map(i => `${i.qty}x ${i.product.emoji} ${i.product.name}`),
+              },
+              transaction: outcome.tx,
+            });
+          } else {
+            setResultModal({
+              isOpen: true,
+              isSuccess: true,
+              title: '¡Pago Aprobado!',
+              message: `Cobro procesado exitosamente con la pulsera NFC de ${outcome.updatedSticker.owner}.`,
+              details: {
+                stickerId: outcome.updatedSticker.id,
+                owner: outcome.updatedSticker.owner,
+                amountUSD: totalUSD,
+                amountBs,
+                prevBalance: outcome.prevBalance,
+                newBalance: outcome.updatedSticker.balance,
+                detail: summaryItems,
+                bcvRate: settings.bcvRate,
+              },
+              transaction: outcome.tx,
+            });
+          }
 
           return true;
-        }
-
-        // 4B. CASHLESS MODE BALANCE VERIFICATION & DEDUCTION
-        const prevBalance = sticker.balance;
-
-        if (prevBalance < totalUSD) {
-          const missingUSD = Number((totalUSD - prevBalance).toFixed(2));
-          soundSynth.playError(settings.enableSound);
-
-          setResultModal({
-            isOpen: true,
-            isSuccess: false,
-            title: 'Saldo Insuficiente',
-            message: `La pulsera de ${sticker.owner} no cuenta con fondos suficientes para pagar esta orden.`,
-            details: {
-              stickerId: sticker.id,
-              owner: sticker.owner,
-              prevBalance,
-              amountUSD: totalUSD,
-              missingUSD,
-              bcvRate: settings.bcvRate,
-            },
-          });
-
-          return false;
-        }
-
-        const newBalance = Number((prevBalance - totalUSD).toFixed(2));
-        const nextTotalSpent = Number(((sticker.totalSpent || 0) + totalUSD).toFixed(2));
-
-        updateCurrentCompany(comp => ({
-          ...comp,
-          stickers: comp.stickers.map(s =>
-            s.id === sticker!.id
-              ? {
-                  ...s,
-                  balance: newBalance,
-                  totalSpent: nextTotalSpent,
-                }
-              : s
-          ),
-        }));
-
-        const tx = addTransaction({
-          type: 'CONSUMO',
-          stickerId: sticker.id,
-          owner: sticker.owner,
-          usd: totalUSD,
-          bs: amountBs,
-          bcvRate: settings.bcvRate,
-          detail: summaryItems || 'Consumo en Stand',
-          provider,
-          cartSnapshot,
-        });
-
-        const ownerUid = getCompanyOwnerUid(currentCompany);
-        const batch = writeBatch(db);
-        batch.update(doc(db, 'companies', currentCompany.id, 'stickers', sticker.id), {
-          balance: newBalance,
-          totalSpent: nextTotalSpent,
-          updatedAt: serverTimestamp(),
-        });
-        batch.set(doc(db, 'companies', currentCompany.id, 'transactions', tx.id), {
-          id: tx.id,
-          companyId: currentCompany.id,
-          ownerUid,
-          type: tx.type,
-          stickerId: tx.stickerId,
-          owner: clampStr(tx.owner, 100),
-          usd: tx.usd,
-          bs: tx.bs,
-          bcvRate: tx.bcvRate,
-          detail: clampStr(tx.detail, 500),
-          provider: clampStr(provider, 100),
-          time: tx.time,
-          timestamp: tx.timestamp,
-          cartSnapshot,
-          createdAt: serverTimestamp(),
-        });
-        try {
-          await batch.commit();
         } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `companies/${currentCompany.id}/transactions/${tx.id}`);
+          return handleNfcError(err, txBaseId);
         }
-
-        setCart([]);
-        soundSynth.playSuccess(settings.enableSound);
-        try {
-          confetti({
-            particleCount: 50,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ['#10b981', '#34d399', '#6ee7b7', '#2563eb'],
-          });
-        } catch {
-          // ignore
-        }
-
-        setResultModal({
-          isOpen: true,
-          isSuccess: true,
-          title: '¡Pago Aprobado!',
-          message: `Cobro procesado exitosamente con la pulsera NFC de ${sticker.owner}.`,
-          details: {
-            stickerId: sticker.id,
-            owner: sticker.owner,
-            amountUSD: totalUSD,
-            amountBs,
-            prevBalance,
-            newBalance,
-            detail: summaryItems,
-            bcvRate: settings.bcvRate,
-          },
-          transaction: tx,
-        });
-
-        return true;
       }
 
       return false;
@@ -3325,7 +3643,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       settings.bcvRate,
       settings.enableSound,
       updateCurrentCompany,
-      addTransaction,
       cart,
       closeNfcModal,
       activeProvider,
